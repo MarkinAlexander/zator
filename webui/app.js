@@ -9,46 +9,108 @@ const views = {
   strategies: document.getElementById('view-strategies'),
 };
 
-const busyLabels = new WeakMap();
+const toastRegion = document.getElementById('toast-region');
+let activeToast = null;
+let activeToastTimer = 0;
 
-function showBanner(message, type = 'success') {
-  const banner = document.getElementById('banner');
-  banner.textContent = message;
-  banner.className = `banner ${type}`;
-  banner.hidden = false;
-  window.clearTimeout(showBanner._timer);
-  showBanner._timer = window.setTimeout(() => {
-    banner.hidden = true;
-  }, 3500);
+function dismissToast() {
+  if (!activeToast) return;
+  window.clearTimeout(activeToastTimer);
+  const node = activeToast;
+  activeToast = null;
+  node.classList.remove('is-visible');
+  const removeNode = () => node.remove();
+  node.addEventListener('transitionend', removeNode, { once: true });
+  window.setTimeout(removeNode, 300);
 }
 
-function setBusy(element, busy, label) {
+function showToast(message, type = 'success') {
+  if (!toastRegion) return;
+  if (activeToast) {
+    activeToast.remove();
+    activeToast = null;
+  }
+  window.clearTimeout(activeToastTimer);
+
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  if (type === 'error') {
+    toast.setAttribute('role', 'alert');
+  }
+
+  const msg = document.createElement('div');
+  msg.className = 'toast-message';
+  msg.textContent = message;
+  toast.appendChild(msg);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'toast-close';
+  close.setAttribute('aria-label', 'Закрыть уведомление');
+  close.textContent = '×';
+  close.addEventListener('click', dismissToast);
+  toast.appendChild(close);
+
+  toastRegion.appendChild(toast);
+  activeToast = toast;
+
+  requestAnimationFrame(() => toast.classList.add('is-visible'));
+
+  // ошибки 8 секунд, обычное уведомление три с половиной
+  const duration = type === 'error' ? 8000 : 3500;
+  activeToastTimer = window.setTimeout(dismissToast, duration);
+}
+
+let activeOperation = false;
+
+const ACTION_SELECTORS = [
+  '#toggle-service',
+  '#restart-service',
+  '#refresh-status',
+  '#run-check',
+  '#refresh-locks',
+  '#strategy-cards .lock-form button[type="submit"]',
+  '#strategy-cards .lock-form .clear-lock',
+];
+
+function getActionControls() {
+  return document.querySelectorAll(ACTION_SELECTORS.join(','));
+}
+
+function lockAllControls() {
+  getActionControls().forEach((control) => {
+    control.disabled = true;
+  });
+}
+
+function unlockAllControls() {
+  getActionControls().forEach((control) => {
+    control.disabled = false;
+  });
+  renderServiceControls();
+}
+
+function setBusy(element, busy) {
   if (!element) return;
+  element.classList.toggle('is-busy', busy);
+  element.disabled = busy;
   if (busy) {
-    if (!busyLabels.has(element)) {
-      busyLabels.set(element, element.textContent);
-    }
-    element.disabled = true;
     element.setAttribute('aria-busy', 'true');
-    if (label) {
-      element.textContent = label;
-    }
-    return;
-  }
-  element.disabled = false;
-  element.removeAttribute('aria-busy');
-  if (busyLabels.has(element)) {
-    element.textContent = busyLabels.get(element);
-    busyLabels.delete(element);
+  } else {
+    element.removeAttribute('aria-busy');
   }
 }
 
-async function withBusy(element, label, task) {
-  setBusy(element, true, label);
+async function withBusy(element, task) {
+  activeOperation = true;
+  lockAllControls();
+  setBusy(element, true);
   try {
     return await task();
   } finally {
     setBusy(element, false);
+    activeOperation = false;
+    unlockAllControls();
   }
 }
 
@@ -119,6 +181,11 @@ function renderServiceControls() {
   restartButton.disabled = !running;
   restartButton.title = running ? 'Перезапустить zapret2' : 'zapret2 остановлен';
   restartButton.setAttribute('aria-label', restartButton.title);
+
+  const serviceControl = toggleButton.closest('.service-control');
+  if (serviceControl) {
+    serviceControl.classList.toggle('is-running', running);
+  }
 }
 
 function renderStatus() {
@@ -134,7 +201,7 @@ function renderStatus() {
   statusProfiles.innerHTML = '';
 
   const cards = [
-    ['zapret2', state.status.zapret2_running ? 'Запущен' : 'Остановлен'],
+    ['zapret2', state.status.zapret2_running ? 'Запущен' : 'Остановлен', state.status.zapret2_running ? 'ok' : 'bad'],
     ['Локи стратегий', state.status.strategy_locks_status],
     ['Фильтр', state.status.hostlist_mode],
     ['FW', state.status.fwtype],
@@ -142,10 +209,12 @@ function renderStatus() {
     ['TLS blob', state.status.tls_blob_mode],
   ];
 
-  cards.forEach(([label, value]) => {
+  cards.forEach(([label, value, stateClass]) => {
     const node = statTemplate.content.firstElementChild.cloneNode(true);
     node.querySelector('.label').textContent = label;
-    node.querySelector('.value').textContent = value ?? '—';
+    const valueEl = node.querySelector('.value');
+    valueEl.textContent = value ?? '—';
+    if (stateClass) valueEl.classList.add(stateClass);
     statusCards.appendChild(node);
   });
 
@@ -206,12 +275,12 @@ function renderStrategies() {
       const rawValue = input.value.trim();
       const value = Number(rawValue);
       if (!/^[0-9]+$/.test(rawValue) || value > Number(input.max || profile.max_strategy || 0)) {
-        showBanner('Введите номер стратегии.', 'error');
+        showToast('Введите номер стратегии.', 'error');
         return;
       }
       try {
         let payload = null;
-        await withBusy(submitButton, 'Сохранение и проверка...', async () => {
+        await withBusy(submitButton, async () => {
           payload = await api('/cgi-bin/set-lock.cgi', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -220,15 +289,15 @@ function renderStrategies() {
           state.strategyChecks[profile.profile] = payload?.check;
           await refreshAll();
         });
-        showBanner(value === 0 ? `Профиль ${profile.label} выключен.` : `Стратегия ${value} сохранена для ${profile.label}.`);
+        showToast(value === 0 ? `Профиль ${profile.label} выключен.` : `Стратегия ${value} сохранена для ${profile.label}.`);
       } catch (error) {
-        showBanner(error.message, 'error');
+        showToast(error.message, 'error');
       }
     });
 
     clearButton.addEventListener('click', async () => {
       try {
-        await withBusy(clearButton, 'Сброс...', async () => {
+        await withBusy(clearButton, async () => {
           await api('/cgi-bin/clear-lock.cgi', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -237,9 +306,9 @@ function renderStrategies() {
           delete state.strategyChecks[profile.profile];
           await refreshAll();
         });
-        showBanner(`Lock снят для ${profile.label}.`);
+        showToast(`Lock снят для ${profile.label}.`);
       } catch (error) {
-        showBanner(error.message, 'error');
+        showToast(error.message, 'error');
       }
     });
 
@@ -294,6 +363,7 @@ async function refreshAll() {
   state.locks = status.profiles || [];
   renderStatus();
   renderStrategies();
+  if (activeOperation) lockAllControls();
 }
 
 initTheme();
@@ -304,32 +374,31 @@ document.querySelectorAll('.tab').forEach((tab) => {
 
 document.getElementById('open-strategies').addEventListener('click', () => switchView('strategies'));
 document.getElementById('refresh-status').addEventListener('click', (event) => {
-  withBusy(event.currentTarget, 'Обновление...', refreshAll).catch((e) => showBanner(e.message, 'error'));
+  withBusy(event.currentTarget, refreshAll).catch((e) => showToast(e.message, 'error'));
 });
 document.getElementById('refresh-locks').addEventListener('click', (event) => {
-  withBusy(event.currentTarget, 'Обновление...', refreshAll).catch((e) => showBanner(e.message, 'error'));
+  withBusy(event.currentTarget, refreshAll).catch((e) => showToast(e.message, 'error'));
 });
 
 async function runServiceAction(button, action) {
-  const labels = {
-    start: ['Включение...', 'zapret2 включен.'],
-    stop: ['Выключение...', 'zapret2 выключен.'],
-    restart: ['Перезапуск...', 'zapret2 перезапущен.'],
+  const successMessages = {
+    start: 'zapret2 включен.',
+    stop: 'zapret2 выключен.',
+    restart: 'zapret2 перезапущен.',
   };
-  const [busyLabel, successMessage] = labels[action] || ['Выполнение...', 'Команда выполнена.'];
+  const successMessage = successMessages[action] || 'Команда выполнена.';
   try {
-    setBusy(button, true, busyLabel);
-    await api('/cgi-bin/service.cgi', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ action }),
+    await withBusy(button, async () => {
+      await api('/cgi-bin/service.cgi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ action }),
+      });
+      await refreshAll();
     });
-    setBusy(button, false);
-    await refreshAll();
-    showBanner(successMessage);
+    showToast(successMessage);
   } catch (error) {
-    setBusy(button, false);
-    showBanner(error.message, 'error');
+    showToast(error.message, 'error');
   }
 }
 
@@ -344,14 +413,14 @@ document.getElementById('restart-service').addEventListener('click', (event) => 
 
 document.getElementById('run-check').addEventListener('click', async (event) => {
   try {
-    const payload = await withBusy(event.currentTarget, 'Проверка...', () => api('/cgi-bin/check.cgi', { method: 'POST' }));
+    const payload = await withBusy(event.currentTarget, () => api('/cgi-bin/check.cgi', { method: 'POST' }));
     renderCheckResults(document.getElementById('check-results'), payload, 'Нет результатов проверки.');
-    showBanner('Проверка завершена.');
+    showToast('Проверка завершена.');
   } catch (error) {
-    showBanner(error.message, 'error');
+    showToast(error.message, 'error');
   }
 });
 
 refreshAll().catch((error) => {
-  showBanner(error.message, 'error');
+  showToast(error.message, 'error');
 });

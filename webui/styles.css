@@ -115,7 +115,7 @@ button:disabled,
 input:disabled,
 select:disabled,
 textarea:disabled {
-  cursor: progress;
+  cursor: not-allowed;
   opacity: 0.68;
 }
 
@@ -132,7 +132,7 @@ button.primary {
 
 .service-control {
   display: grid;
-  grid-template-columns: minmax(11rem, 1fr) 3.6rem;
+  grid-template-columns: 1fr;
   align-items: stretch;
   flex: 2 1 320px;
   border: 1px solid var(--line);
@@ -140,6 +140,11 @@ button.primary {
   background: var(--surface-strong);
   box-shadow: var(--shadow-strong);
   overflow: hidden;
+  transition: grid-template-columns 150ms ease;
+}
+
+.service-control.is-running {
+  grid-template-columns: minmax(11rem, 1fr) 3.6rem;
 }
 
 .service-control button {
@@ -168,12 +173,17 @@ button.primary {
 }
 
 .service-restart {
+  display: none;
   border-left: 1px solid rgba(255, 255, 255, 0.28);
   color: #ffffff;
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
   font-size: 1.25rem;
   font-weight: 700;
   padding-inline: 0;
+}
+
+.service-control.is-running .service-restart {
+  display: block;
 }
 
 button.ghost,
@@ -195,8 +205,7 @@ button.ghost {
 .hero,
 .panel,
 .stat-card,
-.profile-card,
-.banner {
+.profile-card {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -333,18 +342,105 @@ h3 {
   box-shadow: 0 8px 20px rgba(36, 87, 214, 0.22);
 }
 
-.banner {
-  padding: 14px 16px;
+.toast-region {
+  position: fixed;
+  z-index: 1000;
+  right: 16px;
+  bottom: 16px;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-strong);
   color: var(--text);
   overflow-wrap: anywhere;
+  transform: translateX(120%);
+  opacity: 0;
+  transition: transform 220ms ease, opacity 220ms ease;
 }
 
-.banner.success {
-  border-color: color-mix(in srgb, var(--success) 30%, var(--line));
+.toast.is-visible {
+  transform: translateX(0);
+  opacity: 1;
 }
 
-.banner.error {
-  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
+.toast.success {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--line));
+}
+
+.toast.error {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--line));
+}
+
+.toast-message {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.toast-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+  min-height: 0;
+  min-width: 0;
+  border-radius: 8px;
+  font-size: 1.15rem;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.toast-close:not(:disabled):hover {
+  color: var(--text);
+  box-shadow: none;
+}
+
+button.is-busy {
+  position: relative;
+  color: transparent;
+  cursor: progress;
+}
+
+button.is-busy::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.15em;
+  height: 1.15em;
+  margin-top: -0.575em;
+  margin-left: -0.575em;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  animation: z2r-spin 0.7s linear infinite;
+}
+
+button.primary.is-busy::after,
+.service-toggle.is-busy::after,
+.service-restart.is-busy::after {
+  border-color: #ffffff;
+  border-top-color: transparent;
+}
+
+@keyframes z2r-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .view {
@@ -624,8 +720,7 @@ input[type="number"]::-webkit-inner-spin-button {
   .hero,
   .panel,
   .stat-card,
-  .profile-card,
-  .banner {
+  .profile-card {
     padding: 14px;
   }
 
@@ -650,7 +745,7 @@ input[type="number"]::-webkit-inner-spin-button {
   .card-top,
   .meta-line,
   .check-title {
-    flex-direction: column;
+    /* flex-direction: column; */
     align-items: flex-start;
   }
 
@@ -670,5 +765,14 @@ input[type="number"]::-webkit-inner-spin-button {
   .profile-grid.compact,
   .stats-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .toast-region {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
   }
 }
