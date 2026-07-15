@@ -39,6 +39,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -509,7 +510,7 @@ class FakeRouterState:
     """Всё фейковое состояние живёт в self.tmpdir. Потокобезопасно через лок."""
 
     def __init__(self, config_default_path, service_state, lock_state,
-                 check_result, simulate_error, provider):
+                 check_result, simulate_error, provider, delay=3.0, status_delay=0.0):
         self.tmpdir = tempfile.mkdtemp(prefix="z2r_fake_")
         self.lock = threading.Lock()
 
@@ -535,6 +536,18 @@ class FakeRouterState:
         self.check_result = check_result  # ok | fail | mixed
         self.simulate_error = set(simulate_error or [])
         self.provider = provider
+
+        # Искусственные задержки (сек) на «медленных» операциях — чтобы
+        # тестировать спиннеры/«Обновление...»/«Сохранение и проверка...».
+        # zapret2 на реальном устройстве стартует не мгновенно, проверки тоже
+        # занимают время. Меняются в рантайме через dev-API.
+        self.delays = {
+            "service": float(delay),
+            "check": float(delay),
+            "set-lock": float(delay),
+            "clear-lock": float(delay),
+            "status": float(status_delay),
+        }
 
         # Применяем стартовый сценарий локов
         self._apply_lock_state(lock_state)
@@ -653,6 +666,7 @@ class FakeRouterState:
             "simulate_error": sorted(self.simulate_error),
             "provider": self.provider,
             "locks": locks,
+            "delays": dict(self.delays),
             "tmpdir": self.tmpdir,
             "config_path": self.config_path,
             "orch_dir": self.orch_dir,
@@ -683,6 +697,16 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 
     def _log(self, msg):
         print("[fake-router] {0}".format(msg), flush=True)
+
+    def _sleep_for(self, category):
+        """Искусственная задержка операции (симуляция медленного роутера).
+
+        Вызывается ВНЕ state.lock, чтобы не блокировать параллельные запросы
+        (например, одновременный опрос /status во время долгого service start).
+        """
+        d = self.state.delays.get(category, 0.0)
+        if d and d > 0:
+            time.sleep(d)
 
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -759,6 +783,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
 
         if endpoint == "status":
+            self._sleep_for("status")
             self._log("GET {0} | nfqws2={1} locks={2}".format(
                 parsed.path, running, locks))
             with self.state.lock:
@@ -766,6 +791,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             return
 
         if endpoint == "check":
+            self._sleep_for("check")
             self._log("{0} {1} | check_result={2}".format(
                 self.command, parsed.path, self.state.check_result))
             with self.state.lock:
@@ -796,6 +822,8 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 self.command, parsed.path, action))
             self._send_error_json(400, ERR_BAD_ACTION)
             return
+        # zapret2 стартует/останавливается не мгновенно — задержка вне блокировки
+        self._sleep_for("service")
         with self.state.lock:
             # Эмулируем init-скрипт: меняем состояние nfqws2
             if action == "start":
@@ -818,16 +846,19 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if not re.match(r"^[0-9]+$", strategy):
             self._send_error_json(400, ERR_BAD_STRATEGY)
             return
+        # Валидация диапазона (чтение cfg_text атомарно благодаря GIL — можно
+        # вне блокировки); затем искусственная задержка apply+check.
+        maxstrat = config_profile_max_strategy(int(profile), self.state.cfg_text)
+        strat = int(strategy)
+        if strat != 0 and not (1 <= strat <= (maxstrat or 0)):
+            self._send_error_json(400, ERR_STRATEGY_RANGE)
+            return
+        pl = proto_list(int(profile))
+        if not pl:
+            self._send_error_json(400, ERR_NO_PROTO)
+            return
+        self._sleep_for("set-lock")
         with self.state.lock:
-            maxstrat = config_profile_max_strategy(int(profile), self.state.cfg_text)
-            strat = int(strategy)
-            if strat != 0 and not (1 <= strat <= (maxstrat or 0)):
-                self._send_error_json(400, ERR_STRATEGY_RANGE)
-                return
-            pl = proto_list(int(profile))
-            if not pl:
-                self._send_error_json(400, ERR_NO_PROTO)
-                return
             ok = profile_state_set_and_apply(self.state, int(profile), pl, strategy)
             if not ok:
                 self._send_error_json(500, ERR_SAVE_STATE)
@@ -846,11 +877,12 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         if not re.match(r"^[1-7]$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
+        pl = proto_list(int(profile))
+        if not pl:
+            self._send_error_json(400, ERR_NO_PROTO)
+            return
+        self._sleep_for("clear-lock")
         with self.state.lock:
-            pl = proto_list(int(profile))
-            if not pl:
-                self._send_error_json(400, ERR_NO_PROTO)
-                return
             ok = profile_state_set_and_apply(self.state, int(profile), pl, "auto")
             if not ok:
                 self._send_error_json(500, ERR_RESET_STATE)
@@ -888,6 +920,18 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     open(self.state.profile_lock, "w", encoding="utf-8").close()
                     open(self.state.lock_file, "w", encoding="utf-8").close()
                     self.state._apply_lock_state(payload["lock_state"])
+                # Задержки: "delay" (число) задаёт service/check/set-lock/clear-lock
+                # разом; "status_delay" (число) — только status; "delays" (dict)
+                # — точечный перебор по категориям.
+                if "delay" in payload:
+                    for k in ("service", "check", "set-lock", "clear-lock"):
+                        self.state.delays[k] = float(payload["delay"])
+                if "status_delay" in payload:
+                    self.state.delays["status"] = float(payload["status_delay"])
+                if "delays" in payload and isinstance(payload["delays"], dict):
+                    for k, v in payload["delays"].items():
+                        if k in self.state.delays:
+                            self.state.delays[k] = float(v)
                 self._log("POST /__dev/state | updated -> {0}".format(
                     self.state.dev_snapshot()))
                 self._send_json(self.state.dev_snapshot())
@@ -969,6 +1013,13 @@ def _parse_args(argv):
     p.add_argument("--provider", default="Не определён",
                    help="Строка провайдера (только для лога/dev-состояния; "
                         "в реальном WebUI этого поля нет)")
+    p.add_argument("--delay", type=float, default=3.0, metavar="SECONDS",
+                   help="Искусственная задержка (сек) на медленных операциях "
+                        "(service/check/set-lock/clear-lock) — чтобы тестировать "
+                        "спиннеры. По умолчанию 3.0")
+    p.add_argument("--status-delay", type=float, default=0.0, metavar="SECONDS",
+                   help="Задержка (сек) для /status (по умолчанию 0 — статус "
+                        "быстрый; задайте >0 для теста спиннера «Обновление...»)")
     return p.parse_args(argv)
 
 
@@ -1009,6 +1060,8 @@ def main(argv=None):
         check_result=args.check_result,
         simulate_error=sim_errors,
         provider=args.provider,
+        delay=args.delay,
+        status_delay=args.status_delay,
     )
 
     httpd = ThreadingHTTPServer((args.host, args.port), FakeRouterHandler)
@@ -1024,6 +1077,8 @@ def main(argv=None):
     print("  Сценарий:      service={1} check={2} locks={3!r} errors={4}".format(
         args.port, args.service_state, args.check_result,
         args.lock_state, sim_errors or "нет"), flush=True)
+    print("  Задержки:      delay={1}s (service/check/set-lock/clear-lock) "
+          "status={2}s".format(args.port, args.delay, args.status_delay), flush=True)
     print("  dev-API:       GET/POST http://{0}:{1}/__dev/state".format(
         args.host, args.port), flush=True)
     print("  Остановить:    Ctrl+C", flush=True)

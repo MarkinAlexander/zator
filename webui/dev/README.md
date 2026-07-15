@@ -44,6 +44,8 @@ python webui/dev/fake_router_server.py --simulate-error=status
 | `--check-result` | `ok` \| `fail` \| `mixed` | результаты TLS-проверок в `/check` и `set-lock` |
 | `--simulate-error` | `status,service,check,set-lock,clear-lock` (через запятую) | эти эндпоинты отдают `500 {"error":…}` |
 | `--provider` | строка | только для лога (в реальном WebUI поля провайдера нет) |
+| `--delay` | секунды (по умолч. `3`) | искусственная задержка на медленных операциях (`service`/`check`/`set-lock`/`clear-lock`) — чтобы тестировать спиннеры («Включение...», «Проверка...», «Сохранение и проверка...»). zapret2 на устройстве стартует не мгновенно |
+| `--status-delay` | секунды (по умолч. `0`) | задержка для `/status` (0 = статус быстрый; задайте >0 для теста спиннера «Обновление...») |
 
 ## Переключение сценариев на лету (без перезапуска)
 
@@ -55,7 +57,14 @@ curl -X POST http://127.0.0.1:8099/__dev/state -H "Content-Type: application/jso
 ```
 
 Поля: `nfqws2_running`, `check_result`, `provider`, `simulate_error` (массив),
-`lock_state` (перезаписывает все локи). Текущее состояние — `GET /__dev/state`.
+`lock_state` (перезаписывает все локи), `delay` (число — задаёт
+service/check/set-lock/clear-lock разом), `status_delay` (число), `delays`
+(dict — точечно по категориям). Текущее состояние — `GET /__dev/state`.
+
+```bash
+# Удлинить «медленные» операции до 10с прямо на лету (для теста долгих спиннеров)
+curl -X POST http://127.0.0.1:8099/__dev/state -H "Content-Type: application/json" -d "{\"delay\": 10}"
+```
 
 ## Что должно быть видно в UI по сценариям
 
