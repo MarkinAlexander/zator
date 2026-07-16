@@ -7,6 +7,7 @@ const state = {
 const views = {
   status: document.getElementById('view-status'),
   strategies: document.getElementById('view-strategies'),
+  settings: document.getElementById('view-settings'),
 };
 
 const toastRegion = document.getElementById('toast-region');
@@ -69,8 +70,10 @@ const ACTION_SELECTORS = [
   '#refresh-status',
   '#run-check',
   '#refresh-locks',
+  '#refresh-settings',
   '#strategy-cards .lock-form button[type="submit"]',
   '#strategy-cards .lock-form .clear-lock',
+  '#tls-blob-form button[type="submit"]',
 ];
 
 function getActionControls() {
@@ -366,7 +369,97 @@ async function refreshAll() {
   if (activeOperation) lockAllControls();
 }
 
+function renderSettings() {
+  const select = document.getElementById('tls-blob-select');
+  const statusChip = document.getElementById('tls-blob-status');
+  const currentFile = document.getElementById('current-blob-file');
+
+  if (!state.tlsBlobSettings) return;
+
+  const settings = state.tlsBlobSettings;
+
+  statusChip.textContent = settings.current_mode;
+  statusChip.className = 'chip';
+  if (settings.current_mode === 'maxru') {
+    statusChip.classList.add('is-ok');
+  }
+
+  currentFile.textContent = settings.current_blob || '—';
+
+  const currentValue = select.value;
+  select.innerHTML = '<option value="fake_default_tls">fake_default_tls (встроенный)</option>';
+
+  if (Array.isArray(settings.available_blobs)) {
+    settings.available_blobs.forEach(blob => {
+      const option = document.createElement('option');
+      option.value = blob;
+      option.textContent = blob;
+      if (blob === settings.current_blob) {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    });
+  }
+
+  if (settings.current_blob && settings.current_blob !== 'fake_default_tls') {
+    select.value = settings.current_blob;
+  }
+}
+
+async function refreshTlsBlobSettings() {
+  try {
+    const data = await api('/cgi-bin/settings.cgi');
+    state.tlsBlobSettings = data;
+    renderSettings();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function applyTlsBlob(blob) {
+  try {
+    const payload = await api('/cgi-bin/settings.cgi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ setting: 'tls_blob', value: blob }),
+    });
+
+    if (payload.reboot_required) {
+      showToast('TLS-блоб изменён. Перезапустите zapret2 для применения.', 'warning');
+    } else {
+      showToast('TLS-блоб успешно изменён.');
+    }
+
+    await refreshTlsBlobSettings();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+document.getElementById('refresh-settings').addEventListener('click', (event) => {
+  withBusy(event.currentTarget, refreshTlsBlobSettings).catch((e) => showToast(e.message, 'error'));
+});
+
+document.getElementById('tls-blob-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const select = document.getElementById('tls-blob-select');
+  const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+
+  await withBusy(submitButton, async () => {
+    await applyTlsBlob(select.value);
+  });
+});
+
 initTheme();
+
+Promise.all([
+  refreshAll().catch((error) => {
+    showToast(error.message, 'error');
+  }),
+  refreshTlsBlobSettings().catch((error) => {
+    showToast(error.message, 'error');
+  }),
+]);
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => switchView(tab.dataset.view));
@@ -419,8 +512,4 @@ document.getElementById('run-check').addEventListener('click', async (event) => 
   } catch (error) {
     showToast(error.message, 'error');
   }
-});
-
-refreshAll().catch((error) => {
-  showToast(error.message, 'error');
 });

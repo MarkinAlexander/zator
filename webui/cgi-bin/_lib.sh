@@ -263,3 +263,79 @@ $(check_one_target_json "YouTube" "https://www.youtube.com/")
 ,$(check_one_target_json "Instagram" "https://www.instagram.com/")
 ]}"
 }
+
+api_tls_blob_get() {
+  local cfg="/opt/zapret2/config"
+  local fake_dir="/opt/zapret2/files/fake"
+  local current_blob current_mode available_blobs
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+  [ -d "$fake_dir" ] || send_error "500 Internal Server Error" "Директория fake не найдена"
+
+  current_blob="$(sed -n -E 's#.*--blob=maxru:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  [ -z "$current_blob" ] && current_blob=""
+  current_mode="$(config_tls_blob_mode_value "$cfg")"
+
+  available_blobs=""
+  if sort -z </dev/null >/dev/null 2>&1; then
+    while IFS= read -r -d '' f; do
+      f="$(basename "$f")"
+      case "$f" in
+        tls_*.bin|custom_tls.bin)
+          available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
+          ;;
+      esac
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
+  else
+    while IFS= read -r f; do
+      f="$(basename "$f")"
+      case "$f" in
+        tls_*.bin|custom_tls.bin)
+          available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
+          ;;
+      esac
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' | sort)
+  fi
+
+  send_json "200 OK" "{
+    \"current_mode\":\"$(json_escape "$current_mode")\",
+    \"current_blob\":\"$(json_escape "$current_blob")\",
+    \"available_blobs\":[$available_blobs]
+  }"
+}
+
+api_tls_blob_set() {
+  local blob="$PARAM_VALUE"
+  local cfg="/opt/zapret2/config"
+  local fake_dir="/opt/zapret2/files/fake"
+  local sed_ereg prefix
+
+  case "$blob" in
+    fake_default_tls)
+      ;;
+    tls_*.bin|custom_tls.bin)
+      [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
+      ;;
+    *)
+      send_error "400 Bad Request" "Некорректное значение блоба: $blob"
+      ;;
+  esac
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+
+  sed_ereg="$(config_sed_ereg)"
+  prefix="--blob=maxru:@/opt/zapret2/files/fake/"
+
+  if ! grep -q -- "--blob=maxru:@/opt/zapret2/files/fake/" "$cfg"; then
+    send_error "500 Internal Server Error" "Строка --blob=maxru не найдена в конфиге"
+  fi
+
+  if [ "$blob" = "fake_default_tls" ]; then
+    sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)maxru#\1fake_default_tls#g; }' "$cfg"
+  else
+    sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
+    sed -i $sed_ereg "s#(${prefix})[^[:space:]]+#\\1${blob}#g" "$cfg"
+  fi
+
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+}

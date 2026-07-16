@@ -113,7 +113,7 @@ ERR_BAD_ACTION = "Некорректное действие"
 ERR_SERVICE = "Не удалось выполнить команду zapret2"
 
 # Допустимые эндпоинты для --simulate-error
-SIMULATABLE = {"status", "service", "check", "set-lock", "clear-lock"}
+SIMULATABLE = {"status", "service", "check", "set-lock", "clear-lock", "settings"}
 
 
 # ===========================================================================
@@ -503,6 +503,56 @@ def profile_state_set_and_apply(state_obj, profile, proto_list_str, state):
 
 
 # ===========================================================================
+# Порт функций для TLS-блоба (lib/actions.sh + webui/cgi-bin/_lib.sh)
+# ===========================================================================
+
+def _scan_fake_blobs(fake_dir):
+    """Сканирует директорию fake для .bin файлов с TLS, stun, rdp."""
+    blobs = []
+    if not os.path.isdir(fake_dir):
+        return blobs
+    for fname in sorted(os.listdir(fake_dir)):
+        if not fname.endswith(".bin"):
+            continue
+        # Валидация: tls_*.bin, custom_tls.bin, stun.bin, rdp.bin
+        if (fname.startswith("tls_") or fname == "custom_tls.bin" or
+                fname in ("stun.bin", "rdp.bin")):
+            blobs.append(fname)
+    return blobs
+
+
+def config_tls_blob_current(cfg_text):
+    """Возвращает текущий blob-файл из --blob=maxru declaration."""
+    m = re.search(r"--blob=maxru:@/opt/zapret2/files/fake/(\S+)", cfg_text)
+    return m.group(1) if m else ""
+
+
+def _apply_tls_blob(cfg_text, blob):
+    """Применяет новый blob, возвращает новый текст конфига."""
+    if blob == "fake_default_tls":
+        # Переключение на встроенный: maxru -> fake_default_tls в lua-desync
+        lines = []
+        for line in cfg_text.splitlines():
+            if ("--lua-desync=" in line and "blob=maxru" in line and
+                    "strategy=26" not in line):
+                line = re.sub(r"(blob=)maxru", r"\1fake_default_tls", line)
+            lines.append(line)
+        return "\n".join(lines) + "\n"
+    else:
+        # Переключение на внешний файл: fake_default_tls -> maxru + замена файла
+        lines = []
+        for line in cfg_text.splitlines():
+            if ("--lua-desync=" in line and "blob=fake_default_tls" in line and
+                    "strategy=26" not in line):
+                line = re.sub(r"(blob=)fake_default_tls", r"\1maxru", line)
+            # Замена пути в объявлении --blob=maxru:@...
+            line = re.sub(r"(--blob=maxru:@/opt/zapret2/files/fake/)\S+",
+                          r"\1" + blob, line)
+            lines.append(line)
+        return "\n".join(lines) + "\n"
+
+
+# ===========================================================================
 # Фейковое состояние роутера
 # ===========================================================================
 
@@ -510,9 +560,12 @@ class FakeRouterState:
     """Всё фейковое состояние живёт в self.tmpdir. Потокобезопасно через лок."""
 
     def __init__(self, config_default_path, service_state, lock_state,
-                 check_result, simulate_error, provider, delay=3.0, status_delay=0.0):
+                 check_result, simulate_error, provider, fake_dir, delay=3.0, status_delay=0.0):
         self.tmpdir = tempfile.mkdtemp(prefix="z2r_fake_")
         self.lock = threading.Lock()
+
+        # Директория с fake-файлами
+        self.fake_dir = fake_dir
 
         # Фейковый config — копия config.default
         self.config_path = os.path.join(self.tmpdir, "config")
@@ -651,6 +704,41 @@ class FakeRouterState:
                 target = "https://{0}/".format(YT_CLUSTER_FALLBACK)
             results.append(self._check_item(label, target, i))
         return {"results": results}
+
+    # --- TLS blob -----------------------------------------------------------
+
+    def build_tls_blob_settings(self):
+        """api_tls_blob_get() — _lib.sh."""
+        current_blob = config_tls_blob_current(self.cfg_text)
+        current_mode = config_tls_blob_mode_value(self.cfg_text)
+        available_blobs = _scan_fake_blobs(self.fake_dir)
+        return {
+            "current_mode": current_mode,
+            "current_blob": current_blob,
+            "available_blobs": available_blobs,
+        }
+
+    def apply_tls_blob(self, blob):
+        """api_tls_blob_set() — _lib.sh."""
+        # Валидация
+        if blob != "fake_default_tls":
+            valid = False
+            if blob in ("stun.bin", "rdp.bin"):
+                valid = True
+            elif blob.startswith("tls_") or blob == "custom_tls.bin":
+                valid = True
+            if not valid:
+                raise ValueError("Некорректное значение блоба")
+            # Проверка существования файла (в fake_dir)
+            if not os.path.isfile(os.path.join(self.fake_dir, blob)):
+                raise ValueError("Файл блоба не существует")
+        # Проверка наличия строки --blob=maxru:@... в конфиге
+        if "--blob=maxru:@/opt/zapret2/files/fake/" not in self.cfg_text:
+            raise ValueError("Строка --blob=maxru не найдена в конфиге")
+        # Применение
+        self.cfg_text = _apply_tls_blob(self.cfg_text, blob)
+        self._save_config()
+        return {"ok": True, "reboot_required": True}
 
     # --- dev-снимок -------------------------------------------------------
 
@@ -810,6 +898,10 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._handle_clear_lock(params, parsed)
             return
 
+        if endpoint == "settings":
+            self._handle_settings(params, parsed)
+            return
+
         self._send_error_json(404, "Неизвестный эндпоинт: {0}".format(endpoint))
 
     # --- обработчики эндпоинтов ------------------------------------------
@@ -892,6 +984,33 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._log("{0} {1} | profile={2} -> cleared (auto)".format(
                 self.command, parsed.path, profile))
             self._send_json({"ok": True})
+
+    def _handle_settings(self, params, parsed):
+        """Обработчик endpoint /cgi-bin/settings.cgi."""
+        setting = params.get("setting", "")
+
+        if self.command == "GET":
+            with self.state.lock:
+                self._log("GET {0} | tls_blob settings".format(parsed.path))
+                self._send_json(self.state.build_tls_blob_settings())
+            return
+
+        if self.command == "POST":
+            if setting == "tls_blob":
+                blob = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_tls_blob(blob)
+                        self._log("POST {0} | tls_blob={1}".format(parsed.path, blob))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            else:
+                self._send_error_json(400, "Неизвестная настройка")
+                return
+
+        self._send_error_json(405, "Метод не поддерживается")
 
     # --- dev-эндпоинт (управление фейк-состоянием в рантайме) ------------
 
@@ -1039,6 +1158,7 @@ def main(argv=None):
 
     webui_root = args.webui_root or _default_webui_root()
     config_path = args.config or os.path.join(_default_repo_root(), "config.default")
+    fake_dir = os.path.join(_default_repo_root(), "fake")
 
     if not os.path.isdir(webui_root):
         sys.exit("webui-root не найден: {0}".format(webui_root))
@@ -1046,6 +1166,8 @@ def main(argv=None):
         sys.exit("index.html не найден в webui-root: {0}".format(webui_root))
     if not os.path.isfile(config_path):
         sys.exit("config.default не найден: {0}".format(config_path))
+    if not os.path.isdir(fake_dir):
+        sys.exit("Директория fake не найден: {0}".format(fake_dir))
 
     sim_errors = [s.strip() for s in args.simulate_error.split(",") if s.strip()]
     bad = [s for s in sim_errors if s not in SIMULATABLE]
@@ -1060,6 +1182,7 @@ def main(argv=None):
         check_result=args.check_result,
         simulate_error=sim_errors,
         provider=args.provider,
+        fake_dir=fake_dir,
         delay=args.delay,
         status_delay=args.status_delay,
     )
