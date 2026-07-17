@@ -77,6 +77,8 @@ const ACTION_SELECTORS = [
   '#strategy-cards .lock-form .clear-lock',
   '#tls-blob-form button[type="submit"]',
   '#wg-blob-form button[type="submit"]',
+  '.tab',
+  '#open-strategies',
 ];
 
 function getActionControls() {
@@ -94,6 +96,53 @@ function unlockAllControls() {
     control.disabled = false;
   });
   renderServiceControls();
+  document.querySelectorAll('#strategy-cards .lock-form').forEach(updateStrategyFormState);
+  updateTlsBlobSubmit();
+  updateWgSubmit();
+}
+
+function normalizeStrategyValue(raw) {
+  const s = String(raw ?? '').trim();
+  if (!/^[0-9]+$/.test(s)) return null;
+  return s;
+}
+
+function updateStrategyFormState(form) {
+  if (!form) return;
+  const input = form.querySelector('input');
+  const submit = form.querySelector('button[type="submit"]');
+  const clear = form.querySelector('.clear-lock');
+  if (!input || !submit) return;
+  const saved = input.dataset.saved || '0';
+  const current = normalizeStrategyValue(input.value);
+  submit.disabled = current === null || current === saved;
+  if (clear) {
+    clear.disabled = saved === 'auto';
+  }
+}
+
+function updateTlsBlobSubmit() {
+  const select = document.getElementById('tls-blob-select');
+  const form = document.getElementById('tls-blob-form');
+  if (!select || !form) return;
+  const submit = form.querySelector('button[type="submit"]');
+  if (!submit) return;
+  const saved = select.dataset.saved || '';
+  submit.disabled = select.value === saved;
+}
+
+function updateWgSubmit() {
+  const select = document.getElementById('wg-blob-select');
+  const repeatsInput = document.getElementById('wg-repeats-input');
+  const form = document.getElementById('wg-blob-form');
+  if (!select || !repeatsInput || !form) return;
+  const submit = form.querySelector('button[type="submit"]');
+  if (!submit) return;
+  const savedBlob = select.dataset.saved || '';
+  const savedRepeats = repeatsInput.dataset.saved || '';
+  const blobChanged = select.value !== savedBlob;
+  const repeatsChanged = String(repeatsInput.value).trim() !== savedRepeats;
+  submit.disabled = !(blobChanged || repeatsChanged);
 }
 
 function setBusy(element, busy) {
@@ -165,6 +214,7 @@ function initTheme() {
 }
 
 function switchView(view) {
+  if (activeOperation) return;
   Object.entries(views).forEach(([name, element]) => {
     element.classList.toggle('is-active', name === view);
   });
@@ -259,6 +309,9 @@ function renderStrategies() {
     if (/^[0-9]+$/.test(String(profile.current_lock || ''))) {
       input.value = profile.current_lock;
     }
+    input.dataset.saved = String(profile.current_lock || '0');
+    updateStrategyFormState(form);
+    input.addEventListener('input', () => updateStrategyFormState(form));
     if (state.strategyChecks[profile.profile]) {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile], 'Нет результатов быстрой проверки.', false);
     }
@@ -407,6 +460,13 @@ function renderSettings() {
   if (settings.current_blob && settings.current_blob !== 'fake_default_tls') {
     select.value = settings.current_blob;
   }
+
+  select.dataset.saved = settings.current_blob || 'fake_default_tls';
+  updateTlsBlobSubmit();
+  if (select.dataset.bound !== '1') {
+    select.addEventListener('change', updateTlsBlobSubmit);
+    select.dataset.bound = '1';
+  }
 }
 
 async function refreshTlsBlobSettings() {
@@ -458,8 +518,6 @@ document.getElementById('tls-blob-form').addEventListener('submit', async (event
   });
 });
 
-// --- WireGuard blob / repeats (аналог TLS-блоба, логика из пункта 19 CLI) ---
-
 function renderWgSettings() {
   const select = document.getElementById('wg-blob-select');
   const repeatsInput = document.getElementById('wg-repeats-input');
@@ -494,6 +552,18 @@ function renderWgSettings() {
 
   if (settings.current_repeats) {
     repeatsInput.value = settings.current_repeats;
+  }
+
+  select.dataset.saved = settings.current_blob || '';
+  repeatsInput.dataset.saved = String(settings.current_repeats || '');
+  updateWgSubmit();
+  if (select.dataset.bound !== '1') {
+    select.addEventListener('change', updateWgSubmit);
+    select.dataset.bound = '1';
+  }
+  if (repeatsInput.dataset.bound !== '1') {
+    repeatsInput.addEventListener('input', updateWgSubmit);
+    repeatsInput.dataset.bound = '1';
   }
 }
 
@@ -533,6 +603,7 @@ document.querySelectorAll('.step-wg-repeats').forEach((button) => {
     const current = Number.isFinite(parsed) ? parsed : min;
     const next = Math.min(max, Math.max(min, current + step));
     input.value = String(next);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 });
 

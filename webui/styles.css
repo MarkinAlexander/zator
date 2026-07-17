@@ -342,6 +342,15 @@ h3 {
   box-shadow: 0 8px 20px rgba(36, 87, 214, 0.22);
 }
 
+.tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.tab.is-active:disabled {
+  opacity: 1;
+}
+
 .toast-region {
   position: fixed;
   z-index: 1000;
