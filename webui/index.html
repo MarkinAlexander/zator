@@ -100,6 +100,44 @@
           </div>
         </form>
       </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>WireGuard Blob</h2>
+        </div>
+        <p class="panel-desc">
+          Выбор fake-пакета инициации WireGuard и количества его повторов (repeats).
+          Логика соответствует пункту 19 CLI-меню. Изменение требует перезапуска zapret2.
+        </p>
+
+        <form id="wg-blob-form" class="settings-form">
+          <label>
+            <span>Файл blob</span>
+            <select id="wg-blob-select" name="wg_blob" required>
+              <option value="" disabled selected>Загрузка...</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Количество повторов (2–99)</span>
+            <div class="number-stepper">
+              <input type="number" id="wg-repeats-input" name="wg_repeats" min="2" max="99" step="1" required>
+              <div class="stepper-buttons">
+                <button type="button" class="step-wg-repeats" data-step="1" aria-label="Увеличить повторов">↑</button>
+                <button type="button" class="step-wg-repeats" data-step="-1" aria-label="Уменьшить повторов">↓</button>
+              </div>
+            </div>
+          </label>
+
+          <div class="form-hint">
+            Текущий файл: <code id="current-wg-blob-file">—</code>
+          </div>
+
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
     </section>
   </main>
 

@@ -61,6 +61,12 @@ parse_params() {
     raw="$(dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null || true)"
   fi
   local part key value
+  # Инициализация под set -u: все возможные PARAM_* всегда определены.
+  PARAM_PROFILE=""
+  PARAM_STRATEGY=""
+  PARAM_ACTION=""
+  PARAM_SETTING=""
+  PARAM_VALUE=""
   IFS='&' read -r -a parts <<< "$raw"
   for part in "${parts[@]}"; do
     key="${part%%=*}"
@@ -71,6 +77,8 @@ parse_params() {
       profile) PARAM_PROFILE="$value" ;;
       strategy) PARAM_STRATEGY="$value" ;;
       action) PARAM_ACTION="$value" ;;
+      setting) PARAM_SETTING="$value" ;;
+      value) PARAM_VALUE="$value" ;;
     esac
   done
 }
@@ -336,6 +344,103 @@ api_tls_blob_set() {
     sed -i $sed_ereg '/--lua-desync=/ { /strategy=26/! s#(--lua-desync=[^[:space:]]*blob=)fake_default_tls#\1maxru#g; }' "$cfg"
     sed -i $sed_ereg "s#(${prefix})[^[:space:]]+#\\1${blob}#g" "$cfg"
   fi
+
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+}
+
+# ===========================================================================
+# WireGuard blob / repeats — порт menu_action_set_wg_blob() и
+# menu_action_wg_repeats() из lib/actions.sh для WebUI.
+# Стратегия WireGuard использует объявление --blob=fakewgblob:@.../wg_initial_fake_*
+# и параметр blob=fakewgblob:repeats=N в --lua-desync.
+# ===========================================================================
+
+api_wg_blob_get() {
+  local cfg="/opt/zapret2/config"
+  local fake_dir="/opt/zapret2/files/fake"
+  local current_blob current_repeats available_blobs
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+  [ -d "$fake_dir" ] || send_error "500 Internal Server Error" "Директория fake не найдена"
+
+  current_blob="$(sed -n -E 's#.*--blob=fakewgblob:@/opt/zapret2/files/fake/([^[:space:]]+).*#\1#p' "$cfg" | head -n1)"
+  [ -z "$current_blob" ] && current_blob=""
+  current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
+  [ -z "$current_repeats" ] && current_repeats=""
+
+  # Только файлы вида wg_initial_fake_* (как в menu_action_set_wg_blob)
+  available_blobs=""
+  if sort -z </dev/null >/dev/null 2>&1; then
+    while IFS= read -r -d '' f; do
+      f="$(basename "$f")"
+      available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' -print0 | sort -z)
+  else
+    while IFS= read -r f; do
+      f="$(basename "$f")"
+      available_blobs="${available_blobs}${available_blobs:+,}\"$(json_escape "$f")\""
+    done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' | sort)
+  fi
+
+  send_json "200 OK" "{
+    \"current_blob\":\"$(json_escape "$current_blob")\",
+    \"current_repeats\":\"$(json_escape "$current_repeats")\",
+    \"available_blobs\":[$available_blobs]
+  }"
+}
+
+api_wg_blob_set() {
+  local blob="$PARAM_VALUE"
+  local cfg="/opt/zapret2/config"
+  local fake_dir="/opt/zapret2/files/fake"
+  local sed_ereg prefix
+
+  # Валидация имени файла: только wg_initial_fake_* (как в CLI)
+  case "$blob" in
+    wg_initial_fake_*)
+      [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
+      ;;
+    *)
+      send_error "400 Bad Request" "Некорректное значение блоба: $blob"
+      ;;
+  esac
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+
+  sed_ereg="$(config_sed_ereg)"
+  prefix="--blob=fakewgblob:@/opt/zapret2/files/fake/"
+
+  if ! grep -q -- "--blob=fakewgblob:@/opt/zapret2/files/fake/" "$cfg"; then
+    send_error "500 Internal Server Error" "Стратегия WireGuard не найдена в конфиге (нет --blob=fakewgblob:@...)"
+  fi
+
+  sed -i $sed_ereg "s#(${prefix})[^[:space:]]+#\\1${blob}#g" "$cfg"
+
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+}
+
+api_wg_repeats_set() {
+  local repeats="$PARAM_VALUE"
+  local cfg="/opt/zapret2/config"
+  local sed_ereg
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+
+  # Валидация: целое число от 2 до 99 (как в menu_action_wg_repeats)
+  case "$repeats" in
+    ''|*[!0-9]*)
+      send_error "400 Bad Request" "Некорректное значение repeats: $repeats"
+      ;;
+  esac
+  [ "$repeats" -ge 2 ] 2>/dev/null && [ "$repeats" -le 99 ] 2>/dev/null ||
+    send_error "400 Bad Request" "Значение repeats должно быть от 2 до 99"
+
+  if ! grep -q 'blob=fakewgblob:repeats=' "$cfg"; then
+    send_error "500 Internal Server Error" "Стратегия WireGuard не найдена в конфиге (нет blob=fakewgblob:repeats=)"
+  fi
+
+  sed_ereg="$(config_sed_ereg)"
+  sed -i $sed_ereg "s#(blob=fakewgblob:repeats=)[0-9]+#\\1${repeats}#g" "$cfg"
 
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }

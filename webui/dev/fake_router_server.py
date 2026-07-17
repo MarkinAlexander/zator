@@ -552,6 +552,58 @@ def _apply_tls_blob(cfg_text, blob):
         return "\n".join(lines) + "\n"
 
 
+# --- Порт функций для WireGuard-блоба (lib/actions.sh: menu_action_set_wg_blob
+#     и menu_action_wg_repeats + webui/cgi-bin/_lib.sh: api_wg_blob_*) --------
+
+def _scan_wg_blobs(fake_dir):
+    """Сканирует директорию fake для wg_initial_fake_* (menu_action_set_wg_blob)."""
+    blobs = []
+    if not os.path.isdir(fake_dir):
+        return blobs
+    for fname in sorted(os.listdir(fake_dir)):
+        if fname.startswith("wg_initial_fake_"):
+            blobs.append(fname)
+    return blobs
+
+
+def config_wg_blob_current(cfg_text):
+    """Возвращает текущий WG blob-файл из объявления --blob=fakewgblob:@..."""
+    m = re.search(r"--blob=fakewgblob:@/opt/zapret2/files/fake/(\S+)", cfg_text)
+    return m.group(1) if m else ""
+
+
+def config_wg_repeats_current(cfg_text):
+    """Возвращает текущее значение repeats из blob=fakewgblob:repeats=N."""
+    m = re.search(r"blob=fakewgblob:repeats=([0-9]+)", cfg_text)
+    return m.group(1) if m else ""
+
+
+def _apply_wg_blob(cfg_text, blob):
+    """Применяет новый WG blob-файл, возвращает новый текст конфига.
+
+    Эквивалент sed из menu_action_set_wg_blob:
+      s#(--blob=fakewgblob:@/opt/zapret2/files/fake/)\\S+#\\1<blob>#g
+
+    ВАЖНО: используем \\g<1>, а не \\1 — иначе имя файла/число, начинающееся
+    с цифры, сольётся с номером группы (\\1 + '25' == '\\125' == восьмеричный
+    escape). В sed такой проблемы нет, но Python re.sub требует \\g<1>.
+    """
+    return re.sub(r"(--blob=fakewgblob:@/opt/zapret2/files/fake/)\S+",
+                  r"\g<1>" + blob, cfg_text)
+
+
+def _apply_wg_repeats(cfg_text, repeats):
+    """Применяет новое значение repeats, возвращает новый текст конфига.
+
+    Эквивалент sed из menu_action_wg_repeats:
+      s#(blob=fakewgblob:repeats=)[0-9]+#\\1<repeats>#g
+
+    ВАЖНО: \\g<1> вместо \\1 — иначе '\\1'+'25'=='\\125' (восьмеричный escape).
+    """
+    return re.sub(r"(blob=fakewgblob:repeats=)[0-9]+",
+                  r"\g<1>" + str(repeats), cfg_text)
+
+
 # ===========================================================================
 # Фейковое состояние роутера
 # ===========================================================================
@@ -737,6 +789,46 @@ class FakeRouterState:
             raise ValueError("Строка --blob=maxru не найдена в конфиге")
         # Применение
         self.cfg_text = _apply_tls_blob(self.cfg_text, blob)
+        self._save_config()
+        return {"ok": True, "reboot_required": True}
+
+    # --- WireGuard blob / repeats -----------------------------------------
+
+    def build_wg_blob_settings(self):
+        """api_wg_blob_get() — _lib.sh."""
+        current_blob = config_wg_blob_current(self.cfg_text)
+        current_repeats = config_wg_repeats_current(self.cfg_text)
+        available_blobs = _scan_wg_blobs(self.fake_dir)
+        return {
+            "current_blob": current_blob,
+            "current_repeats": current_repeats,
+            "available_blobs": available_blobs,
+        }
+
+    def apply_wg_blob(self, blob):
+        """api_wg_blob_set() — _lib.sh."""
+        # Валидация: только wg_initial_fake_*
+        if not blob.startswith("wg_initial_fake_"):
+            raise ValueError("Некорректное значение блоба")
+        if not os.path.isfile(os.path.join(self.fake_dir, blob)):
+            raise ValueError("Файл блоба не существует")
+        if "--blob=fakewgblob:@/opt/zapret2/files/fake/" not in self.cfg_text:
+            raise ValueError("Стратегия WireGuard не найдена в конфиге (нет --blob=fakewgblob:@...)")
+        self.cfg_text = _apply_wg_blob(self.cfg_text, blob)
+        self._save_config()
+        return {"ok": True, "reboot_required": True}
+
+    def apply_wg_repeats(self, repeats):
+        """api_wg_repeats_set() — _lib.sh."""
+        # Валидация: целое число 2..99 (как в menu_action_wg_repeats)
+        if not re.match(r"^[0-9]+$", str(repeats)):
+            raise ValueError("Некорректное значение repeats")
+        val = int(repeats)
+        if val < 2 or val > 99:
+            raise ValueError("Значение repeats должно быть от 2 до 99")
+        if "blob=fakewgblob:repeats=" not in self.cfg_text:
+            raise ValueError("Стратегия WireGuard не найдена в конфиге (нет blob=fakewgblob:repeats=)")
+        self.cfg_text = _apply_wg_repeats(self.cfg_text, val)
         self._save_config()
         return {"ok": True, "reboot_required": True}
 
@@ -986,13 +1078,24 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
 
     def _handle_settings(self, params, parsed):
-        """Обработчик endpoint /cgi-bin/settings.cgi."""
+        """Обработчик endpoint /cgi-bin/settings.cgi.
+
+        GET  ?setting=wg_blob  -> настройки WireGuard (blob + repeats)
+        GET  (без параметра)   -> настройки TLS-блоба (обратная совместимость)
+        POST setting=tls_blob  -> смена TLS-блоба
+        POST setting=wg_blob   -> смена WG-блоба
+        POST setting=wg_repeats-> смена WG repeats
+        """
         setting = params.get("setting", "")
 
         if self.command == "GET":
             with self.state.lock:
-                self._log("GET {0} | tls_blob settings".format(parsed.path))
-                self._send_json(self.state.build_tls_blob_settings())
+                if setting == "wg_blob":
+                    self._log("GET {0} | wg_blob settings".format(parsed.path))
+                    self._send_json(self.state.build_wg_blob_settings())
+                else:
+                    self._log("GET {0} | tls_blob settings".format(parsed.path))
+                    self._send_json(self.state.build_tls_blob_settings())
             return
 
         if self.command == "POST":
@@ -1006,9 +1109,28 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send_error_json(400, str(e))
                 return
-            else:
-                self._send_error_json(400, "Неизвестная настройка")
+            if setting == "wg_blob":
+                blob = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_wg_blob(blob)
+                        self._log("POST {0} | wg_blob={1}".format(parsed.path, blob))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
                 return
+            if setting == "wg_repeats":
+                repeats = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_wg_repeats(repeats)
+                        self._log("POST {0} | wg_repeats={1}".format(parsed.path, repeats))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            self._send_error_json(400, "Неизвестная настройка")
+            return
 
         self._send_error_json(405, "Метод не поддерживается")
 

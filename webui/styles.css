@@ -67,7 +67,7 @@ html[data-theme="dark"] {
 
 html,
 body {
-  min-height: 100%;
+  min-height: 100dvh;
 }
 
 body {
@@ -197,9 +197,9 @@ button.ghost {
 
 .app {
   width: min(1200px, calc(100% - 24px));
-  margin: 20px auto 48px;
+  margin: 0 auto;
   display: grid;
-  gap: 16px;
+  gap: 1rem;
 }
 
 .hero,
@@ -698,6 +698,12 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .bad {
   color: var(--danger);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px; /* Расстояние между элементами (подберите под себя) */
 }
 
 @media (min-width: 900px) {

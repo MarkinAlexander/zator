@@ -2,6 +2,8 @@ const state = {
   locks: [],
   status: null,
   strategyChecks: {},
+  tlsBlobSettings: null,
+  wgBlobSettings: null,
 };
 
 const views = {
@@ -74,6 +76,7 @@ const ACTION_SELECTORS = [
   '#strategy-cards .lock-form button[type="submit"]',
   '#strategy-cards .lock-form .clear-lock',
   '#tls-blob-form button[type="submit"]',
+  '#wg-blob-form button[type="submit"]',
 ];
 
 function getActionControls() {
@@ -437,7 +440,12 @@ async function applyTlsBlob(blob) {
 }
 
 document.getElementById('refresh-settings').addEventListener('click', (event) => {
-  withBusy(event.currentTarget, refreshTlsBlobSettings).catch((e) => showToast(e.message, 'error'));
+  withBusy(event.currentTarget, async () => {
+    await Promise.all([
+      refreshTlsBlobSettings(),
+      refreshWgBlobSettings(),
+    ]);
+  }).catch((e) => showToast(e.message, 'error'));
 });
 
 document.getElementById('tls-blob-form').addEventListener('submit', async (event) => {
@@ -450,6 +458,115 @@ document.getElementById('tls-blob-form').addEventListener('submit', async (event
   });
 });
 
+// --- WireGuard blob / repeats (аналог TLS-блоба, логика из пункта 19 CLI) ---
+
+function renderWgSettings() {
+  const select = document.getElementById('wg-blob-select');
+  const repeatsInput = document.getElementById('wg-repeats-input');
+  const currentFile = document.getElementById('current-wg-blob-file');
+
+  if (!state.wgBlobSettings || !select) return;
+
+  const settings = state.wgBlobSettings;
+
+  currentFile.textContent = settings.current_blob || '—';
+
+  select.innerHTML = '';
+  if (Array.isArray(settings.available_blobs) && settings.available_blobs.length > 0) {
+    settings.available_blobs.forEach((blob) => {
+      const option = document.createElement('option');
+      option.value = blob;
+      option.textContent = blob;
+      if (blob === settings.current_blob) {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    });
+    if (settings.current_blob) {
+      select.value = settings.current_blob;
+    }
+  } else {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'WireGuard не найден в конфиге';
+    select.appendChild(option);
+  }
+
+  if (settings.current_repeats) {
+    repeatsInput.value = settings.current_repeats;
+  }
+}
+
+async function refreshWgBlobSettings() {
+  try {
+    const data = await api('/cgi-bin/settings.cgi?setting=wg_blob');
+    state.wgBlobSettings = data;
+    renderWgSettings();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function applyWgBlob(blob) {
+  return api('/cgi-bin/settings.cgi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ setting: 'wg_blob', value: blob }),
+  });
+}
+
+async function applyWgRepeats(repeats) {
+  return api('/cgi-bin/settings.cgi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ setting: 'wg_repeats', value: String(repeats) }),
+  });
+}
+
+document.querySelectorAll('.step-wg-repeats').forEach((button) => {
+  button.addEventListener('click', () => {
+    const input = document.getElementById('wg-repeats-input');
+    const step = Number(button.dataset.step || 0);
+    const min = Number(input.min || 2);
+    const max = Number(input.max || 99);
+    const parsed = Number(input.value || min);
+    const current = Number.isFinite(parsed) ? parsed : min;
+    const next = Math.min(max, Math.max(min, current + step));
+    input.value = String(next);
+  });
+});
+
+document.getElementById('wg-blob-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const select = document.getElementById('wg-blob-select');
+  const repeatsInput = document.getElementById('wg-repeats-input');
+  const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+
+  const blob = select.value;
+  const repeatsRaw = repeatsInput.value.trim();
+  const repeats = Number(repeatsRaw);
+
+  if (!blob) {
+    showToast('Выберите файл blob для WireGuard.', 'error');
+    return;
+  }
+  if (!/^[0-9]+$/.test(repeatsRaw) || repeats < 2 || repeats > 99) {
+    showToast('Повторы должны быть целым числом от 2 до 99.', 'error');
+    return;
+  }
+
+  await withBusy(submitButton, async () => {
+    try {
+      await applyWgBlob(blob);
+      await applyWgRepeats(repeats);
+      showToast('Настройки WireGuard сохранены. Перезапустите zapret2 для применения.', 'warning');
+      await refreshWgBlobSettings();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  });
+});
+
 initTheme();
 
 Promise.all([
@@ -457,6 +574,9 @@ Promise.all([
     showToast(error.message, 'error');
   }),
   refreshTlsBlobSettings().catch((error) => {
+    showToast(error.message, 'error');
+  }),
+  refreshWgBlobSettings().catch((error) => {
     showToast(error.message, 'error');
   }),
 ]);
