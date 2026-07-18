@@ -127,7 +127,22 @@ all_profiles_json() {
   profile_json 5 "YouTube QUIC" "UDP 443 для YouTube"
   printf ','
   profile_json 6 "Voice UDP" "Discord/STUN и голосовые сервисы"
+  printf ','
+  profile_json_fallback 8 "Fallback TLS" "Безразборный режим TLS (profile 8)"
+  printf ','
+  profile_json_fallback 9 "Fallback HTTP" "Безразборный режим HTTP (profile 9)"
   printf ']'
+}
+
+profile_json_fallback() {
+  local id="$1" label="$2" desc="$3" proto current max fallback_state
+  proto="$(profile_proto "$id")"
+  current="$(profile_state_display "$id" "$proto")"
+  max="$(orch_max_strategy_for_profile "$id")"
+  fallback_state="$(_fallback_state "$CONFIG_FILE")"
+  printf '{"profile":%s,"label":"%s","description":"%s","current_lock":"%s","max_strategy":%s,"is_fallback":true,"fallback_enabled":%s}' \
+    "$id" "$(json_escape "$label")" "$(json_escape "$desc")" "$(json_escape "$current")" "${max:-0}" \
+    "$([ "$fallback_state" = "включен" ] && echo true || echo false)"
 }
 
 service_zapret2() {
@@ -221,7 +236,7 @@ EOF
 
 api_set_lock() {
   parse_params
-  [[ "${PARAM_PROFILE:-}" =~ ^[1-7]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
+  [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   [[ "${PARAM_STRATEGY:-}" =~ ^[0-9]+$ ]] || send_error "400 Bad Request" "Некорректная стратегия"
   local max proto_list check_json old_udp_ports
   max="$(orch_max_strategy_for_profile "$PARAM_PROFILE")"
@@ -240,7 +255,7 @@ api_set_lock() {
 
 api_clear_lock() {
   parse_params
-  [[ "${PARAM_PROFILE:-}" =~ ^[1-7]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
+  [[ "${PARAM_PROFILE:-}" =~ ^[1-9]$ ]] || send_error "400 Bad Request" "Некорректный профиль"
   local proto_list old_udp_ports
   proto_list="$(config_profile_proto_list "$PARAM_PROFILE")"
   [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
@@ -348,13 +363,6 @@ api_tls_blob_set() {
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
 
-# ===========================================================================
-# WireGuard blob / repeats — порт menu_action_set_wg_blob() и
-# menu_action_wg_repeats() из lib/actions.sh для WebUI.
-# Стратегия WireGuard использует объявление --blob=fakewgblob:@.../wg_initial_fake_*
-# и параметр blob=fakewgblob:repeats=N в --lua-desync.
-# ===========================================================================
-
 api_wg_blob_get() {
   local cfg="/opt/zapret2/config"
   local fake_dir="/opt/zapret2/files/fake"
@@ -419,6 +427,158 @@ api_wg_blob_set() {
   send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
 }
 
+_fallback_current_strategy() {
+  local profile="$1"
+  local cfg="$2"
+  local begin_marker end_marker
+  if [ "$profile" = "9" ]; then
+    begin_marker="#Z2R_FALLBACK_HTTP_BEGIN"
+    end_marker="#Z2R_FALLBACK_HTTP_END"
+  else
+    begin_marker="#Z2R_FALLBACK_BEGIN"
+    end_marker="#Z2R_FALLBACK_END"
+  fi
+  awk -v begin="$begin_marker" -v end="$end_marker" '
+    $0 ~ "^[[:space:]]*" begin "$" {inblk=1; next}
+    $0 ~ "^[[:space:]]*" end "$" {inblk=0; exit}
+    inblk && $0 ~ /^--filter-tcp=/ {
+      n++
+      if ($0 ~ /^--skip[[:space:]]/) next
+      if ($0 ~ /--hostlist-domains= --/ || $0 ~ /--hostlist-domains=$/) {print n; found=1; exit}
+    }
+    END{if (!found) print 0}
+  ' "$cfg"
+}
+
+_fallback_set_strategy() {
+  local profile="$1"
+  local strategy="$2"
+  local cfg="$3"
+  local begin_marker end_marker filter_pattern
+  if [ "$profile" = "9" ]; then
+    begin_marker="#Z2R_FALLBACK_HTTP_BEGIN"
+    end_marker="#Z2R_FALLBACK_HTTP_END"
+    filter_pattern="--filter-tcp=80 --filter-l7=http"
+  else
+    begin_marker="#Z2R_FALLBACK_BEGIN"
+    end_marker="#Z2R_FALLBACK_END"
+    filter_pattern="--filter-tcp=443 --filter-l7=tls"
+  fi
+  awk -v begin="$begin_marker" -v end="$end_marker" -v target="$strategy" -v fpattern="$filter_pattern" '
+    $0 ~ "^[[:space:]]*" begin "$" {inblk=1; print; next}
+    $0 ~ "^[[:space:]]*" end "$" {inblk=0; print; next}
+    inblk && $0 ~ "^--filter-tcp=" {
+      count++
+      # Убираем --skip если есть
+      sub(/^[[:space:]]*--skip[[:space:]]+/, "")
+      # Сбрасываем все строки на none.dom
+      sub(/--hostlist-domains= --/, "--hostlist-domains=none.dom --")
+      sub(/--hostlist-domains=$/, "--hostlist-domains=none.dom")
+      # Если это целевая стратегия и target > 0 — активируем
+      if (target > 0 && count == target) {
+        sub(/--hostlist-domains=none\.dom --/, "--hostlist-domains= --")
+        sub(/--hostlist-domains=none\.dom$/, "--hostlist-domains=")
+        changed=1
+      }
+      # Если target == 0 — добавляем --skip ко всем строкам
+      if (target == 0) {
+        $0 = "--skip " $0
+      }
+    }
+    {print}
+    END{exit((target==0 || changed)?0:1)}
+  ' "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
+}
+
+_fallback_state() {
+  local cfg="$1"
+  if { sed -n '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/p' "$cfg"; sed -n '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/p' "$cfg"; } | grep -q '^[[:space:]]*--skip[[:space:]]'; then
+    echo "выключен"
+  else
+    echo "включен"
+  fi
+}
+
+_fallback_set_state() {
+  local cfg="$1"
+  local want_on="$2"
+  if [ "$want_on" = "1" ]; then
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--skip[[:space:]]\+//' "$cfg"
+    sed -i '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/ s/^[[:space:]]*--skip[[:space:]]\+//' "$cfg"
+  else
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--filter-tcp=443 --filter-l7=tls/--skip --filter-tcp=443 --filter-l7=tls/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_BEGIN/,/#Z2R_FALLBACK_END/ s/^[[:space:]]*--filter-tcp=443$/--skip --filter-tcp=443/' "$cfg"
+    sed -i '/#Z2R_FALLBACK_HTTP_BEGIN/,/#Z2R_FALLBACK_HTTP_END/ s/^[[:space:]]*--filter-tcp=80 --filter-l7=http/--skip --filter-tcp=80 --filter-l7=http/' "$cfg"
+  fi
+}
+
+api_fallback_get() {
+  local cfg="/opt/zapret2/config"
+  local state tls_strat http_strat tls_max http_max
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+
+  state="$(_fallback_state "$cfg")"
+  tls_strat="$(profile_state_display 8 tls)"
+  http_strat="$(profile_state_display 9 http)"
+  tls_max="$(config_profile_max_strategy 8 "$cfg")"
+  http_max="$(config_profile_max_strategy 9 "$cfg")"
+
+  send_json "200 OK" "{
+    \"state\":\"$(json_escape "$state")\",
+    \"tls_strategy\":\"$(json_escape "$tls_strat")\",
+    \"http_strategy\":\"$(json_escape "$http_strat")\",
+    \"tls_max\":${tls_max:-0},
+    \"http_max\":${http_max:-0}
+  }"
+}
+
+api_fallback_state_set() {
+  local value="$PARAM_VALUE"
+  local cfg="/opt/zapret2/config"
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+
+  case "$value" in
+    0|1) ;;
+    *) send_error "400 Bad Request" "Некорректное значение: $value" ;;
+  esac
+
+  _fallback_set_state "$cfg" "$value"
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+}
+
+api_fallback_strategy_set() {
+  local profile="$1"
+  local strategy="$2"
+  local cfg="/opt/zapret2/config"
+  local max proto_list
+
+  [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
+
+  case "$profile" in
+    8|9) ;;
+    *) send_error "400 Bad Request" "Некорректный профиль: $profile" ;;
+  esac
+
+  case "$strategy" in
+    ''|*[!0-9]*) send_error "400 Bad Request" "Некорректная стратегия: $strategy" ;;
+  esac
+
+  max="$(config_profile_max_strategy "$profile" "$cfg")"
+  if [ "$strategy" -ne 0 ] && [ "$strategy" -gt "${max:-0}" ]; then
+    send_error "400 Bad Request" "Стратегия вне диапазона (макс: $max)"
+  fi
+
+  proto_list="$(config_profile_proto_list "$profile")"
+  [ -n "$proto_list" ] || send_error "400 Bad Request" "Не удалось определить протокол профиля"
+  profile_state_set_and_apply "$profile" "$proto_list" "$strategy" "$cfg" ||
+    send_error "500 Internal Server Error" "Не удалось сохранить стратегию"
+  telemetry_notify
+
+  send_json "200 OK" "{\"ok\":true,\"reboot_required\":true}"
+}
+
 api_wg_repeats_set() {
   local repeats="$PARAM_VALUE"
   local cfg="/opt/zapret2/config"
@@ -426,7 +586,6 @@ api_wg_repeats_set() {
 
   [ -f "$cfg" ] || send_error "500 Internal Server Error" "Config не найден"
 
-  # Валидация: целое число от 2 до 99 (как в menu_action_wg_repeats)
   case "$repeats" in
     ''|*[!0-9]*)
       send_error "400 Bad Request" "Некорректное значение repeats: $repeats"

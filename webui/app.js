@@ -4,6 +4,7 @@ const state = {
   strategyChecks: {},
   tlsBlobSettings: null,
   wgBlobSettings: null,
+  fallbackSettings: null,
 };
 
 const views = {
@@ -77,6 +78,7 @@ const ACTION_SELECTORS = [
   '#strategy-cards .lock-form .clear-lock',
   '#tls-blob-form button[type="submit"]',
   '#wg-blob-form button[type="submit"]',
+  '#fallback-state-form button[type="submit"]',
   '.tab',
   '#open-strategies',
 ];
@@ -99,6 +101,7 @@ function unlockAllControls() {
   document.querySelectorAll('#strategy-cards .lock-form').forEach(updateStrategyFormState);
   updateTlsBlobSubmit();
   updateWgSubmit();
+  updateFallbackSubmit();
 }
 
 function normalizeStrategyValue(raw) {
@@ -143,6 +146,19 @@ function updateWgSubmit() {
   const blobChanged = select.value !== savedBlob;
   const repeatsChanged = String(repeatsInput.value).trim() !== savedRepeats;
   submit.disabled = !(blobChanged || repeatsChanged);
+}
+
+function updateFallbackSubmit() {
+  const stateForm = document.getElementById('fallback-state-form');
+  if (stateForm) {
+    const submit = stateForm.querySelector('button[type="submit"]');
+    const checkbox = stateForm.querySelector('input[type="checkbox"]');
+    if (submit && checkbox) {
+      const saved = checkbox.dataset.saved || '0';
+      const current = checkbox.checked ? '1' : '0';
+      submit.disabled = current === saved;
+    }
+  }
 }
 
 function setBusy(element, busy) {
@@ -284,6 +300,8 @@ function renderStatus() {
   });
 }
 
+const FALLBACK_CHECK_HINT = 'Безразборный режим: быстрая проверка неприменима (применяется ко всем доменам).';
+
 function renderStrategies() {
   const container = document.getElementById('strategy-cards');
   const template = document.getElementById('strategy-card-template');
@@ -312,7 +330,9 @@ function renderStrategies() {
     input.dataset.saved = String(profile.current_lock || '0');
     updateStrategyFormState(form);
     input.addEventListener('input', () => updateStrategyFormState(form));
-    if (state.strategyChecks[profile.profile]) {
+    if (profile.is_fallback) {
+      renderCheckResults(inlineCheck, state.strategyChecks[profile.profile] || { results: [] }, FALLBACK_CHECK_HINT, false);
+    } else if (state.strategyChecks[profile.profile]) {
       renderCheckResults(inlineCheck, state.strategyChecks[profile.profile], 'Нет результатов быстрой проверки.', false);
     }
 
@@ -329,7 +349,20 @@ function renderStrategies() {
       });
     });
 
+    if (profile.is_fallback && !profile.fallback_enabled) {
+      node.classList.add('is-disabled');
+      input.disabled = true;
+      submitButton.disabled = true;
+      clearButton.disabled = true;
+      stepButtons.forEach((b) => { b.disabled = true; });
+      inlineCheck.innerHTML = '<p class="fallback-hint">Включите безразборный режим в настройках</p>';
+    }
+
     form.addEventListener('submit', async (event) => {
+      if (profile.is_fallback && !profile.fallback_enabled) {
+        showToast('Сначала включите безразборный режим в настройках.', 'error');
+        return;
+      }
       event.preventDefault();
       const rawValue = input.value.trim();
       const value = Number(rawValue);
@@ -355,6 +388,10 @@ function renderStrategies() {
     });
 
     clearButton.addEventListener('click', async () => {
+      if (profile.is_fallback && !profile.fallback_enabled) {
+        showToast('Сначала включите безразборный режим в настройках.', 'error');
+        return;
+      }
       try {
         await withBusy(clearButton, async () => {
           await api('/cgi-bin/clear-lock.cgi', {
@@ -593,6 +630,49 @@ async function applyWgRepeats(repeats) {
   });
 }
 
+function renderFallbackSettings() {
+  const stateForm = document.getElementById('fallback-state-form');
+  if (!state.fallbackSettings || !stateForm) return;
+
+  const settings = state.fallbackSettings;
+  const isEnabled = settings.state === 'включен';
+
+  const checkbox = stateForm.querySelector('input[type="checkbox"]');
+  if (checkbox) {
+    checkbox.checked = isEnabled;
+    checkbox.dataset.saved = isEnabled ? '1' : '0';
+  }
+
+  const stateChip = document.getElementById('fallback-state-chip');
+  if (stateChip) {
+    stateChip.textContent = isEnabled ? 'включен' : 'выключен';
+    stateChip.className = 'chip';
+    if (isEnabled) {
+      stateChip.classList.add('is-ok');
+    }
+  }
+
+  updateFallbackSubmit();
+}
+
+async function refreshFallbackSettings() {
+  try {
+    const data = await api('/cgi-bin/settings.cgi?setting=fallback');
+    state.fallbackSettings = data;
+    renderFallbackSettings();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+}
+
+async function applyFallbackState(enabled) {
+  return api('/cgi-bin/settings.cgi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ setting: 'fallback_state', value: enabled ? '1' : '0' }),
+  });
+}
+
 document.querySelectorAll('.step-wg-repeats').forEach((button) => {
   button.addEventListener('click', () => {
     const input = document.getElementById('wg-repeats-input');
@@ -638,6 +718,34 @@ document.getElementById('wg-blob-form').addEventListener('submit', async (event)
   });
 });
 
+const fallbackToggle = document.getElementById('fallback-state-toggle');
+if (fallbackToggle) {
+  fallbackToggle.addEventListener('change', () => {
+    updateFallbackSubmit();
+  });
+}
+
+const fallbackStateForm = document.getElementById('fallback-state-form');
+if (fallbackStateForm) {
+  fallbackStateForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const checkbox = event.currentTarget.querySelector('input[type="checkbox"]');
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    if (!checkbox || !submitButton) return;
+
+    await withBusy(submitButton, async () => {
+      try {
+        await applyFallbackState(checkbox.checked);
+        showToast(checkbox.checked ? 'Безразборный режим включён.' : 'Безразборный режим выключен.');
+        await refreshFallbackSettings();
+        await refreshAll();
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+  });
+}
+
 initTheme();
 
 Promise.all([
@@ -649,6 +757,9 @@ Promise.all([
   }),
   refreshWgBlobSettings().catch((error) => {
     showToast(error.message, 'error');
+  }),
+  refreshFallbackSettings().catch((error) => {
+    console.error('Fallback settings error:', error);
   }),
 ]);
 

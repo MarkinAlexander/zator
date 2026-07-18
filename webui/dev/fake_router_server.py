@@ -56,7 +56,12 @@ PROFILES = [
     (4, "Discord TCP", "TCP профиль Discord"),
     (5, "YouTube QUIC", "UDP 443 для YouTube"),
     (6, "Voice UDP", "Discord/STUN и голосовые сервисы"),
+    (8, "Fallback TLS", "Безразборный режим TLS (profile 8)"),
+    (9, "Fallback HTTP", "Безразборный режим HTTP (profile 9)"),
 ]
+
+# Fallback profiles (is_fallback=True)
+FALLBACK_PROFILES = {8, 9}
 
 # config_profile_proto_list() — lib/config.sh:359
 _PROTO_LIST = {
@@ -483,18 +488,25 @@ def profile_state_clear(profile_lock, profile, proto):
 
 def profile_state_set_and_apply(state_obj, profile, proto_list_str, state):
     """profile_state_set_and_apply() + profile_config_apply_state() —
-    lib/config.sh:531 / 486. Пишет и profile.lock, и locked.tsv."""
+    lib/config.sh:535 / 490. Пишет и profile.lock, и orchestra-lock.
+
+    Профили 8/9 (fallback) пишут orchestra-lock в locked.manual.tsv
+    (см. profile_config_orch_set — lib/config.sh:461), остальные — в locked.tsv.
+    Runtime-выбор стратегии для 8/9 делает circular_locked:key=N, читая manual-лок.
+    """
     pl = proto_list_str.split()
     normalized = profile_state_normalize(state)
     if normalized is None:
         return False
+    orch_file = (state_obj.lock_manual_file
+                 if int(profile) in FALLBACK_PROFILES else state_obj.lock_file)
     for proto in pl:
         if normalized == "auto":
             profile_state_clear(state_obj.profile_lock, profile, proto)
-            orch_locked_clear(state_obj.lock_file, profile, proto)
+            orch_locked_clear(orch_file, profile, proto)
         else:
             profile_state_set(state_obj.profile_lock, profile, proto, normalized)
-            orch_locked_set(state_obj.lock_file, profile, proto, normalized)
+            orch_locked_set(orch_file, profile, proto, normalized)
     # Профиль 6: правка голосовых портов в конфиге (config_profile_voice_ports_apply)
     if int(profile) == 6:
         state_obj.cfg_text = config_profile_voice_ports_apply(state_obj.cfg_text, normalized)
@@ -605,6 +617,128 @@ def _apply_wg_repeats(cfg_text, repeats):
 
 
 # ===========================================================================
+# Fallback (безразборный режим) — порт из webui/cgi-bin/_lib.sh
+# ===========================================================================
+
+def _fallback_current_strategy(profile, cfg_text):
+    """_fallback_current_strategy() — _lib.sh: Получить текущую стратегию для fallback-блока."""
+    if profile == 9:
+        begin, end = "#Z2R_FALLBACK_HTTP_BEGIN", "#Z2R_FALLBACK_HTTP_END"
+    else:
+        begin, end = "#Z2R_FALLBACK_BEGIN", "#Z2R_FALLBACK_END"
+    inblk = False
+    n = 0
+    for line in cfg_text.splitlines():
+        if re.match(r"^\s*" + re.escape(begin) + r"\s*$", line):
+            inblk = True
+            continue
+        if re.match(r"^\s*" + re.escape(end) + r"\s*$", line):
+            break
+        if not inblk:
+            continue
+        if re.match(r"^--filter-tcp=", line):
+            n += 1
+            if re.match(r"^--skip\s", line):
+                continue
+            if "--hostlist-domains= --" in line or line.rstrip().endswith("--hostlist-domains="):
+                return n
+    return 0
+
+
+def _fallback_set_strategy(profile, strategy, cfg_text):
+    """_fallback_set_strategy() — _lib.sh: Установить стратегию для fallback-блока."""
+    if profile == 9:
+        begin, end = "#Z2R_FALLBACK_HTTP_BEGIN", "#Z2R_FALLBACK_HTTP_END"
+    else:
+        begin, end = "#Z2R_FALLBACK_BEGIN", "#Z2R_FALLBACK_END"
+    lines = cfg_text.splitlines()
+    result = []
+    inblk = False
+    count = 0
+    changed = False
+    for line in lines:
+        if re.match(r"^\s*" + re.escape(begin) + r"\s*$", line):
+            inblk = True
+            result.append(line)
+            continue
+        if re.match(r"^\s*" + re.escape(end) + r"\s*$", line):
+            inblk = False
+            result.append(line)
+            continue
+        if inblk and re.match(r"^--filter-tcp=", line):
+            count += 1
+            # Убираем --skip если есть
+            line = re.sub(r"^\s*--skip\s+", "", line)
+            # Сбрасываем все строки на none.dom
+            line = line.replace("--hostlist-domains= --", "--hostlist-domains=none.dom --")
+            if line.rstrip().endswith("--hostlist-domains="):
+                line = line.rstrip()[:-len("--hostlist-domains=")] + "--hostlist-domains=none.dom"
+            # Если это целевая стратегия и target > 0 — активируем
+            if strategy > 0 and count == strategy:
+                line = line.replace("--hostlist-domains=none.dom --", "--hostlist-domains= --")
+                if line.rstrip().endswith("--hostlist-domains=none.dom"):
+                    line = line.rstrip()[:-len("--hostlist-domains=none.dom")] + "--hostlist-domains="
+                changed = True
+            # Если target == 0 — добавляем --skip ко всем строкам
+            if strategy == 0:
+                line = "--skip " + line
+        result.append(line)
+    return "\n".join(result) + ("\n" if cfg_text.endswith("\n") else "")
+
+
+def _fallback_state(cfg_text):
+    """_fallback_state() — _lib.sh: Получить состояние fallback-режима."""
+    # Проверяем наличие --skip в блоках #Z2R_FALLBACK*
+    inblk = False
+    begin_markers = ("#Z2R_FALLBACK_BEGIN", "#Z2R_FALLBACK_HTTP_BEGIN")
+    end_markers = ("#Z2R_FALLBACK_END", "#Z2R_FALLBACK_HTTP_END")
+    for line in cfg_text.splitlines():
+        for bm in begin_markers:
+            if re.match(r"^\s*" + re.escape(bm) + r"\s*$", line):
+                inblk = True
+                break
+        for em in end_markers:
+            if re.match(r"^\s*" + re.escape(em) + r"\s*$", line):
+                inblk = False
+                break
+        if inblk and re.match(r"^\s*--skip\s", line):
+            return "выключен"
+    return "включен"
+
+
+def _fallback_set_state(cfg_text, want_on):
+    """_fallback_set_state() — _lib.sh: Установить состояние fallback-режима."""
+    lines = cfg_text.splitlines()
+    result = []
+    inblk_tls = False
+    inblk_http = False
+    for line in lines:
+        if re.match(r"^\s*#Z2R_FALLBACK_BEGIN\s*$", line):
+            inblk_tls = True
+        elif re.match(r"^\s*#Z2R_FALLBACK_END\s*$", line):
+            inblk_tls = False
+        elif re.match(r"^\s*#Z2R_FALLBACK_HTTP_BEGIN\s*$", line):
+            inblk_http = True
+        elif re.match(r"^\s*#Z2R_FALLBACK_HTTP_END\s*$", line):
+            inblk_http = False
+
+        if inblk_tls or inblk_http:
+            if want_on:
+                # Убираем --skip
+                line = re.sub(r"^\s*--skip\s+", "", line)
+            else:
+                # Добавляем --skip перед --filter-tcp
+                if re.match(r"^--filter-tcp=443 --filter-l7=tls", line):
+                    line = "--skip " + line
+                elif re.match(r"^--filter-tcp=443\s*$", line):
+                    line = "--skip " + line
+                elif re.match(r"^--filter-tcp=80 --filter-l7=http", line):
+                    line = "--skip " + line
+        result.append(line)
+    return "\n".join(result) + ("\n" if cfg_text.endswith("\n") else "")
+
+
+# ===========================================================================
 # Фейковое состояние роутера
 # ===========================================================================
 
@@ -695,15 +829,26 @@ class FakeRouterState:
 
     def profile_json(self, pid, label, desc):
         proto = profile_proto(pid)
-        current = profile_state_get(self.profile_lock, self.lock_file, pid, proto)
+        is_fallback = pid in FALLBACK_PROFILES
+        # current_lock читаем из profile.lock + orchestra-lock — как реальный
+        # profile_json_fallback → profile_state_display. Для 8/9 orchestra-lock
+        # живёт в locked.manual.tsv (profile_config_orch_set); config-блок не
+        # хранит выбор стратегии (его делает runtime circular_locked:key=N).
+        orch_file = self.lock_manual_file if is_fallback else self.lock_file
+        current = profile_state_get(self.profile_lock, orch_file, pid, proto)
+        fallback_enabled = (_fallback_state(self.cfg_text) == "включен") if is_fallback else None
         maxstrat = config_profile_max_strategy(pid, self.cfg_text)
-        return {
+        result = {
             "profile": pid,
             "label": label,
             "description": desc,
             "current_lock": current,
             "max_strategy": maxstrat,
         }
+        if is_fallback:
+            result["is_fallback"] = True
+            result["fallback_enabled"] = fallback_enabled
+        return result
 
     def all_profiles_json(self):
         return [self.profile_json(p, l, d) for (p, l, d) in PROFILES]
@@ -832,14 +977,66 @@ class FakeRouterState:
         self._save_config()
         return {"ok": True, "reboot_required": True}
 
+    # --- Fallback (безразборный режим) ------------------------------------
+
+    def build_fallback_settings(self):
+        """api_fallback_get() — _lib.sh.
+
+        Стратегии TLS (8) и HTTP (9) читаются из profile.lock + locked.manual.tsv
+        (profile_state_display), а не из config-блоков: источник правды для
+        fallback — orchestra-lock, который читает runtime circular_locked.
+        """
+        state = _fallback_state(self.cfg_text)
+        tls_strat = profile_state_get(self.profile_lock, self.lock_manual_file, 8, "tls")
+        http_strat = profile_state_get(self.profile_lock, self.lock_manual_file, 9, "http")
+        tls_max = config_profile_max_strategy(8, self.cfg_text)
+        http_max = config_profile_max_strategy(9, self.cfg_text)
+        return {
+            "state": state,
+            "tls_strategy": tls_strat,
+            "http_strategy": http_strat,
+            "tls_max": tls_max,
+            "http_max": http_max,
+        }
+
+    def apply_fallback_state(self, enabled):
+        """api_fallback_state_set() — _lib.sh."""
+        want_on = enabled in (1, "1", True)
+        self.cfg_text = _fallback_set_state(self.cfg_text, want_on)
+        self._save_config()
+        return {"ok": True, "reboot_required": True}
+
+    def apply_fallback_strategy(self, profile, strategy):
+        """api_fallback_strategy_set() — _lib.sh.
+
+        Фиксация стратегии fallback (8/9) — через orchestra-lock
+        (profile_state_set_and_apply → profile.lock + locked.manual.tsv), единый
+        механизм с set-lock.cgi. Runtime-выбор делает circular_locked:key=N.
+        """
+        profile = int(profile)
+        if profile not in (8, 9):
+            raise ValueError("Некорректный профиль")
+        if not re.match(r"^[0-9]+$", str(strategy)):
+            raise ValueError("Некорректная стратегия")
+        strat = int(strategy)
+        max_strat = config_profile_max_strategy(profile, self.cfg_text)
+        if strat != 0 and strat > max_strat:
+            raise ValueError("Стратегия вне диапазона (макс: {0})".format(max_strat))
+        pl = proto_list(profile)
+        if not pl:
+            raise ValueError("Не удалось определить протокол профиля")
+        if not profile_state_set_and_apply(self, profile, pl, str(strat)):
+            raise ValueError("Не удалось сохранить стратегию")
+        return {"ok": True, "reboot_required": True}
+
     # --- dev-снимок -------------------------------------------------------
 
     def dev_snapshot(self):
         locks = {}
         for pid, _, _ in PROFILES:
             proto = profile_proto(pid)
-            locks[str(pid)] = profile_state_get(self.profile_lock, self.lock_file,
-                                                pid, proto)
+            orch_file = self.lock_manual_file if pid in FALLBACK_PROFILES else self.lock_file
+            locks[str(pid)] = profile_state_get(self.profile_lock, orch_file, pid, proto)
         return {
             "nfqws2_running": bool(self.nfqws2_running),
             "check_result": self.check_result,
@@ -1024,7 +1221,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
         # api_set_lock() — _lib.sh:214
         profile = params.get("profile", "")
         strategy = params.get("strategy", "")
-        if not re.match(r"^[1-7]$", profile):
+        if not re.match(r"^[1-9]$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
         if not re.match(r"^[0-9]+$", strategy):
@@ -1058,7 +1255,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
     def _handle_clear_lock(self, params, parsed):
         # api_clear_lock() — _lib.sh:232
         profile = params.get("profile", "")
-        if not re.match(r"^[1-7]$", profile):
+        if not re.match(r"^[1-9]$", profile):
             self._send_error_json(400, ERR_BAD_PROFILE)
             return
         pl = proto_list(int(profile))
@@ -1093,6 +1290,9 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 if setting == "wg_blob":
                     self._log("GET {0} | wg_blob settings".format(parsed.path))
                     self._send_json(self.state.build_wg_blob_settings())
+                elif setting == "fallback":
+                    self._log("GET {0} | fallback settings".format(parsed.path))
+                    self._send_json(self.state.build_fallback_settings())
                 else:
                     self._log("GET {0} | tls_blob settings".format(parsed.path))
                     self._send_json(self.state.build_tls_blob_settings())
@@ -1125,6 +1325,28 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     with self.state.lock:
                         result = self.state.apply_wg_repeats(repeats)
                         self._log("POST {0} | wg_repeats={1}".format(parsed.path, repeats))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "fallback_state":
+                value = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_fallback_state(value)
+                        self._log("POST {0} | fallback_state={1}".format(parsed.path, value))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "fallback_strategy":
+                profile = params.get("profile", "")
+                strategy = params.get("strategy", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_fallback_strategy(profile, strategy)
+                        self._log("POST {0} | fallback_strategy profile={1} strategy={2}".format(
+                            parsed.path, profile, strategy))
                         self._send_json(result)
                 except ValueError as e:
                     self._send_error_json(400, str(e))

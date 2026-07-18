@@ -8,6 +8,9 @@ case "${REQUEST_METHOD:-GET}" in
       wg_blob)
         api_wg_blob_get
         ;;
+      fallback)
+        api_fallback_get
+        ;;
       *)
         api_tls_blob_get
         ;;
@@ -24,6 +27,12 @@ case "${REQUEST_METHOD:-GET}" in
         ;;
       wg_repeats)
         api_wg_repeats_set
+        ;;
+      fallback_state)
+        api_fallback_state_set
+        ;;
+      fallback_strategy)
+        api_fallback_strategy_set "${PARAM_PROFILE:-}" "${PARAM_STRATEGY:-}"
         ;;
       *)
         send_error "400 Bad Request" "Неизвестная настройка"

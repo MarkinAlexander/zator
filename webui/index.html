@@ -103,6 +103,27 @@
 
       <section class="panel">
         <div class="panel-header">
+          <h2>Безразборный режим (Fallback)</h2>
+          <span class="chip" id="fallback-state-chip"></span>
+        </div>
+        <p class="panel-desc">
+          Безразборный режим позволяет обходить блокировки для всех доменов, не только из списков RKN.
+          Включите режим, затем выберите стратегию для TLS (profile 8) и HTTP (profile 9) во вкладке "Стратегии".
+        </p>
+
+        <form id="fallback-state-form" class="settings-form">
+          <label class="toggle-field">
+            <input type="checkbox" id="fallback-state-toggle">
+            <span>Включить безразборный режим</span>
+          </label>
+          <div class="card-actions">
+            <button type="submit" class="primary">Сохранить</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
           <h2>WireGuard Blob</h2>
         </div>
         <p class="panel-desc">
