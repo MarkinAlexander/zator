@@ -29,6 +29,49 @@ Secondary helper scripts:
 - `user_test2.sh`
 - `merlin_wan_restart_zapret.sh`
 
+## Git Workflow (Branch and Contribution Model)
+
+Roles: the author (owner of the upstream repository) and contributors working in
+their own forks. Contributors push only to their own fork (`origin`) and deliver
+changes via pull requests; direct commits to upstream branches are the author's
+privilege.
+
+Remotes:
+
+- `origin` — your own fork of this repository; the only push target for contributors.
+- `upstream` = `AloofLibra/zator` — the author's repository; fetch and PR only.
+
+Branch semantics:
+
+- `zator` — the primary branch. Maintained by direct commits: the author commits to
+  it in `upstream`, a contributor may keep and commit to their own copy in their fork.
+  Sync with the author via `git merge upstream/zator`.
+- `develop` — the author's development branch. In a contributor checkout it is a clean
+  mirror of `upstream/develop`: NEVER commit to it, sync only (`git checkout develop &&
+  git pull && git push`; recommended wiring: pull from `upstream/develop`, push to
+  `origin` via `pushRemote`).
+- any other branch (`fix/*`, `feat/*`, `docs/*`, ...) — a contributor feature branch
+  based on `develop`, intended for a PR into `AloofLibra:develop`.
+
+At task start, any agent session (or a new contributor joining) picks the mode from
+the current branch (`git branch --show-current`) and continues in that branch:
+
+1. On a feature branch: continue working in it — commit and `git push` to `origin`.
+   Never switch to or commit into `zator`/`develop` unless the user explicitly asks.
+2. On `zator`: work directly in it; push to `origin`.
+3. On `develop` with a task that targets the shared development: refresh the mirror
+   first (`git checkout develop && git pull && git push`), then branch off it:
+   `git checkout -b fix/<name> develop`; first push with `git push -u origin <branch>`.
+4. Never push to `upstream`. `git pull` is valid only on `develop` and `zator`; a
+   feature branch is refreshed (e.g. when `upstream/develop` moved ahead during review)
+   with `git fetch upstream && git rebase upstream/develop && git push --force-with-lease`.
+5. When the user confirms the work is done: PR `<fork>:<branch> → AloofLibra:develop`.
+   One PR = one focused task. Review fixes are new commits in the same branch — the PR
+   updates automatically, do not open a new one.
+6. After the PR is merged: sync `develop` (`git pull` + `git push`), then delete the
+   merged branch locally and on `origin` (`git branch -d <branch> && git push origin
+   --delete <branch>`).
+
 ## Current Runtime Model
 
 This project is no longer centered on `/opt/zapret`. The active target layout is `/opt/zapret2`.
