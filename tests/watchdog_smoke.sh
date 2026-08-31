@@ -56,7 +56,12 @@ grep -qF 'LOGFILE="${Z2R_WATCHDOG_LOGFILE:-/opt/zator/z2r_lib/zapret2-watchdog.l
   || fail "лог watchdog (WRT) должен лежать в root-owned /opt/zator/z2r_lib, а не в world-writable /tmp"
 grep -qF '"$ZATOR_ROOT/z2r_lib/zapret2-watchdog.log"' "$REPO_DIR/z2r.sh" \
   || fail "п.666 должен читать события watchdog из root-owned $ZATOR_ROOT/z2r_lib/zapret2-watchdog.log"
-ok "deployment: лог watchdog в root-owned каталоге"
+# OpenWrt rc.common при ЛЮБОМ вызове init-скрипта берёт source-time flock на
+# fd 1000 (procd_lock в procd.sh): вечный демон с этим локом блокирует
+# навсегда stop/status (зависание меню 19-6) — в CI rc.common не воспроизвести
+grep -qF 'flock -u 1000' "$REPO_DIR/init.d/openwrt/zapret2-watchdog" \
+  || fail "демон OpenWRT обязан снимать source-time flock fd 1000 из procd.sh, иначе stop/status висят навсегда"
+ok "deployment: лог watchdog в root-owned каталоге, flock демона отпущен"
 
 # --- Динамическая часть: watchdog_*-функции из lib/submenus.sh ---
 
