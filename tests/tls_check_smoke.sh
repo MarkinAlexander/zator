@@ -86,10 +86,10 @@ chmod +x "$TMP_DIR/bin/curl"
 
 # Мок nslookup/dig для движка z2r_dns_* (профиль 10, антиспуф DNS).
 # ok = живой ответ VPS из docs/dns_udp_desync.md (bind-формат, A + AAAA).
+# flaky = ТСПУ отвечает инъекцией не на каждый запрос: 2-я проба NXDOMAIN.
 cat > "$TMP_DIR/bin/nslookup" <<'MOCK'
 #!/bin/sh
-case "${MOCK_DNS_MODE:-ok}" in
-  ok)
+print_ok() {
 cat <<'EOF'
 Server:         8.8.8.8
 Address:        8.8.8.8#53
@@ -111,6 +111,20 @@ Address: 2620:7:6002:0:466:39ff:fe7f:1826
 Name:   static.torproject.org
 Address: 2a01:4f8:fff0:4f:266:37ff:feae:3bbc
 EOF
+}
+case "${MOCK_DNS_MODE:-ok}" in
+  ok)
+    print_ok
+    exit 0 ;;
+  flaky)
+    n=1
+    [ -f "$COUNTER_DIR/dns" ] && n=$(( $(cat "$COUNTER_DIR/dns") + 1 ))
+    echo "$n" > "$COUNTER_DIR/dns"
+    if [ "$n" = 2 ]; then
+      echo "** server can't find deb.torproject.org: NXDOMAIN"
+      exit 3
+    fi
+    print_ok
     exit 0 ;;
   busybox)
 cat <<'EOF'
@@ -718,6 +732,7 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   export PATH="$TMP_DIR/bin:$PATH"
   export TMPDIR="$TMP_DIR"
   export Z2R_DNS_TOOL=nslookup
+  export Z2R_DNS_TRIES=3 Z2R_DNS_INTERVAL=0
   # shellcheck source=/dev/null
   source "$REPO_DIR/webui/cgi-bin/_lib.sh"
 
@@ -769,10 +784,40 @@ printf '%s' "$cli_out" | grep -q "Проверьте доступность вр
   [ -z "$(z2r_dns_field "$res" 4)" ] || fail "сценарий 18: dig-режим не должен приносить AAAA: $res"
   export Z2R_DNS_TOOL=nslookup
 
+  # Серия проб: флаки ТСПУ (ok, NXDOMAIN, ok) -> итог ok 2 из 3
+  export MOCK_DNS_MODE=flaky
+  rm -f "$COUNTER_DIR/dns"
+  out_series="$(z2r_dns_check_series)"
+  res="$(printf '%s\n' "$out_series" | sed -n 1p)"
+  states="$(printf '%s\n' "$out_series" | sed -n 2p)"
+  [ "$(z2r_dns_field "$res" 1)" = "ok" ] || fail "сценарий 18: серия с одним ok должна давать ok: $res"
+  [ "$(z2r_dns_field "$res" 6)" = "2" ] || fail "сценарий 18: счётчик ok в серии неверен: $res"
+  case " $states " in
+    *" fail/nxdomain "*) : ;;
+    *) fail "сценарий 18: в серии нет провала: $states" ;;
+  esac
+  z2r_dns_series_text "$res" | grep -q "2 из 3" \
+    || fail "сценарий 18: итог серии без счётчика"
+
+  rm -f "$COUNTER_DIR/dns"
+  out="$(z2r_dns_check_print)"
+  printf '%s\n' "$out" | grep -q "3 проверки, интервал" || fail "сценарий 18: заголовок серии без параметров"
+  printf '%s\n' "$out" | grep -q "Итог:" || fail "сценарий 18: печать серии без итога"
+  printf '%s\n' "$out" | grep -q "\[2\]" || fail "сценарий 18: печать серии без номеров проб"
+  printf '%s\n' "$out" | grep -q "2 из 3" || fail "сценарий 18: печать серии без счётчика в итоге"
+
+  rm -f "$COUNTER_DIR/dns"
+  json="$(check_one_dns_json)"
+  printf '%s' "$json" | grep -q '"verdict":"ok"' || fail "сценарий 18: JSON серии без ok: $json"
+  printf '%s' "$json" | grep -q '2 из 3' || fail "сценарий 18: JSON серии без счётчика: $json"
+  printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+    || fail "сценарий 18: JSON серии невалиден: $json"
+
   # WebUI: JSON-обёртка (check.cgi?profile=10)
   export MOCK_DNS_MODE=nxdomain
   json="$(check_one_dns_json)"
   printf '%s' "$json" | grep -q '"verdict":"fail"' || fail "сценарий 18: JSON без verdict fail: $json"
+  printf '%s' "$json" | grep -q 'во всех 3' || fail "сценарий 18: JSON fail без счётчика серии"
   printf '%s' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
     || fail "сценарий 18: JSON невалиден: $json"
   export MOCK_DNS_MODE=ok
