@@ -1,0 +1,8 @@
+# Локальная референс-копия бандла zapret2 (не часть проекта)
+bolvan-zapret2-lib/
+# IDE/агентские каталоги и временные файлы
+.idea/
+.zcode/
+tmp/
+dubug.log
+__pycache__/
