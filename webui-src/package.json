@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/stamp-assets.mjs",
-    "check": "vue-tsc --noEmit"
+    "check": "vue-tsc --noEmit",
+    "pack": "node scripts/pack-zator-tar.mjs"
   },
   "dependencies": {
     "vue": "^3.4.38",
