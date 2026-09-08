@@ -737,10 +737,9 @@ deploy_update_menu() {
     submenu_item 4 "Выбрать номерной релиз (список с датами; установка закрепляет версию)"
     submenu_item 5 "Установить из локального tar.gz (по умолчанию ищется в /tmp)"
     submenu_item 6 "Обновить/переустановить zapret2"
-    submenu_item 7 "Обновить стратегии, lua и листы (механизм перехода)"
+    submenu_item 7 "Обновить конфиг, стратегии, lua и листы (сброс к эталону, есть бэкап)"
     submenu_item 8 "Сбросить пользовательские файлы к эталону (netrogat и др.)"
-    submenu_item 9 "Перекачать config.default (живой config не трогается)"
-    submenu_item 10 "Проверить целостность установки"
+    submenu_item 9 "Проверить целостность установки"
     submenu_item 0 "Назад в главное меню"
     echo ""
     read -re -p "" answer
@@ -845,14 +844,6 @@ $i. $tar_file"
         pause_enter
         ;;
       9)
-        if z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default"; then
-          echo -e "${green}config.default перекачан. Живой config не тронут (обновление конфигурации — п.7).${plain}"
-        else
-          echo -e "${red}Не удалось перекачать config.default.${plain}"
-        fi
-        pause_enter
-        ;;
-      10)
         deploy_integrity_check || true
         pause_enter
         ;;
@@ -871,7 +862,7 @@ deploy_transition_menu() {
   local answer
   while true; do
     clear -x
-    echo -e "${Fcyan}===== Обновление стратегий, lua и листов =====${plain}"
+    echo -e "${Fcyan}===== Обновление конфига, стратегий, lua и листов =====${plain}"
     echo -e "${yellow}Пользовательские файлы (netrogat.txt, TCP_Custom.txt, substrings-листы, custom_tls.bin) не перезаписываются молча.${plain}"
     echo ""
     submenu_item 1 "Обновить, не трогая пользовательские файлы (рекомендуется)"
