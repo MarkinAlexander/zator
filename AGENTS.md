@@ -82,7 +82,7 @@ Normal flow:
 
 ## Layout
 
-- `z2r.sh`: top-level orchestration script. Sources runtime modules from `zapret2/z2r_lib` after deployment, while this repository stores their source versions in `lib/`.
+- `z2r.sh`: top-level orchestration script. Sources runtime modules from `zapret2/z2r_lib` after deployment, while this repository stores their source versions in `lib/`. Selects the zapret2 build flavor at install/reinstall: `official` (bol-van releases, mirror + Yandex Disk fallback) or `fork` (MarkinAlexander/zapret2 releases, GitHub-only, hardware fastpath reasm patch, default on Keenetic). The choice persists in `$ZATOR_ROOT/extra_strats/cache/zapret2_flavor`; `zapret2_flavor_*`, `z2r_version_valid`, and `z2r_download_zapret2_release` are flavor-aware (fork allows version suffixes like `1.0.5.1-reasm-fix`). Covered by `tests/flavor_smoke.sh`.
 - `config.default`: main shipped `zapret2` config. This is now a large profile-driven config with `--lua-init`, `--lua-desync`, profile blocks, fallback blocks, blob declarations, and strategy numbering that other scripts depend on.
 - `lib/ui.sh`: generic menu and terminal UI helpers.
 - `lib/provider.sh`: ASN-based ISP/provider detection (ipwho.is → ipinfo.io → ip-api), city, cache, and manual override. The ASN→brand table is layered: builtin minimal table in `PROVIDER_ASN_BUILTIN` merged with the updatable `data/providers/asn.txt` (remote-priority, see `provider_load_database`/`provider_update_database`, cache in `extra_strats/cache/provider_asn.txt`, TTL 7 days, GitHub is never a runtime dependency).
