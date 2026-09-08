@@ -61,6 +61,39 @@ menu_action_toggle_keenetic_policy_mode() {
   echo -e "${green}Режим Keenetic-политики изменён:${plain} $value"
 }
 
+# Применяет свежий config.default к живому config: переносит локи
+# (profile_apply_all), client-scope, WAN кинетика, раскоммент юзера.
+# Пользовательские листы и файлы не трогает. Сервис должен быть
+# остановлен, старт/рестарт — забота вызывающего.
+config_apply_from_default() {
+  local root="${ZAPRET2_ROOT:-/opt/zapret2}"
+  local old_scope_cfg="/tmp/z2r_client_scope_config_$$"
+  cp -f "$root/config" "$old_scope_cfg" 2>/dev/null || true
+
+  # Раскомменчивание юзера под keenetic или merlin
+  change_user
+  # На Keenetic автоматически подставляем WAN интерфейс в свежий шаблон конфига.
+  if [ "$hardware" = "keenetic" ]; then
+    config_keenetic_set_wan_iface "$root/config.default"
+  fi
+
+  profile_apply_all "$root/config.default"
+
+  cp -f "$root/config.default" "$root/config"
+  if [ -f "$old_scope_cfg" ]; then
+    config_client_scope_apply "$old_scope_cfg" "$root/config" || true
+    rm -f "$old_scope_cfg"
+  fi
+  config_client_scope_ensure "$root/config" || true
+  client_scope_lua_config_sync "$root/config" || true
+  [ "$hardware" = "keenetic" ] && ensure_keenetic_policy_config "$root/config"
+  # После копирования заново подставляем WAN, чтобы перенос не терял IFACE_WAN.
+  if [ "$hardware" = "keenetic" ]; then
+    config_keenetic_set_wan_iface "$root/config"
+  fi
+  return 0
+}
+
 menu_action_update_config_reset() {
   local old_scope_cfg="/tmp/z2r_client_scope_config_$$"
   cp -f /opt/zapret2/config "$old_scope_cfg" 2>/dev/null || true
@@ -95,27 +128,7 @@ menu_action_update_config_reset() {
     fi
   fi
 
-  # Раскомменчивание юзера под keenetic или merlin
-  change_user
-  # На Keenetic автоматически подставляем WAN интерфейс в свежий шаблон конфига.
-  if [ "$hardware" = "keenetic" ]; then
-    config_keenetic_set_wan_iface /opt/zapret2/config.default
-  fi
-
-  profile_apply_all /opt/zapret2/config.default
-
-  cp -f /opt/zapret2/config.default /opt/zapret2/config
-  if [ -f "$old_scope_cfg" ]; then
-    config_client_scope_apply "$old_scope_cfg" /opt/zapret2/config || true
-    rm -f "$old_scope_cfg"
-  fi
-  config_client_scope_ensure /opt/zapret2/config || true
-  client_scope_lua_config_sync /opt/zapret2/config || true
-  [ "$hardware" = "keenetic" ] && ensure_keenetic_policy_config /opt/zapret2/config
-  # После копирования синхронизируем рабочий конфиг, чтобы reset не терял IFACE_WAN.
-  if [ "$hardware" = "keenetic" ]; then
-    config_keenetic_set_wan_iface /opt/zapret2/config
-  fi
+  config_apply_from_default
 
   if [ "$BACKUP_HELPER_CREATED" != "1" ] || [ ! -f "$BACKUP_LAST_ARCHIVE" ]; then
     z2r_service_action start
