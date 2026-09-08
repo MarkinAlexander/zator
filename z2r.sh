@@ -1908,7 +1908,7 @@ webui_submenu() {
     echo -e "${cyan}--- Web UI ---${plain}"
     echo -e "${yellow}Состояние: ${plain}${status_line}"
     echo ""
-    submenu_item "1" "Установить/обновить Web UI"
+    submenu_item "1" "Установить/переустановить Web UI"
     submenu_item "2" "Показать статус и URL"
     if [ "$webui_running" = "1" ]; then
       submenu_item "3" "Перезапустить Web UI"
@@ -2047,7 +2047,7 @@ ${Fcyan}10.${yellow} (Де)активировать обход UDP на 1026-655
 ${Fcyan}11.${yellow} Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: ${plain}[${MENU_FLOWOFFLOAD}]${yellow}
 ${Fcyan}12.${yellow} Режим фильтра hostlist/autohostlist. Сейчас: ${plain}[${MENU_HOSTLIST}]${yellow}
 ${Fcyan}13.${yellow} Безразборный режим (fallback). Сейчас: ${plain}[${MENU_FALLBACK}]${yellow}
-${Fcyan}14.${yellow} Web-панель управления (установка/обновление, ~3МБ места)
+${Fcyan}14.${yellow} Web-панель управления (установка/переустановка; обновление - п.5)
 ${Fcyan}15.${yellow} Провайдер
 ${Fcyan}16.${yellow} Сменить TLS blob (--blob=maxru). Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
 ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас: ${plain}[${MENU_RST_GUARD}]${yellow}
