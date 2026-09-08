@@ -12,6 +12,7 @@ interface CardDef {
   subText?: string
   to?: RouteLocationRaw
   cli?: string
+  compact?: boolean
 }
 
 const cards = computed<CardDef[]>(() => {
@@ -36,13 +37,13 @@ const cards = computed<CardDef[]>(() => {
   const dnsProfile = (data.profiles || []).find((profile) => profile.is_dns_desync)
 
   const ver = versionInfo.value
-  const verValue = ver?.zator_date ? ver.zator_date : (ver?.zator_version || '—')
-  const verSub = ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined
+  const verValue = ver?.zator_date || ver?.zator_version || '—'
+  let verSub = ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined
+  if (ver?.update_available) verSub = `${verSub ?? ''} · есть обновление`.trim()
   const verClass = ver?.update_available ? 'bad' : (ver?.zator_date ? 'ok' : '')
-  const verLabel = ver?.update_available ? 'Доступно обновление' : 'Версия zator'
 
   return [
-    { label: verLabel, value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5' },
+    { label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: true },
     { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad' },
     { label: 'Локи стратегий', value: data.strategy_locks_status ?? '—', to: '/strategies' },
     { label: 'Client scopes', value: scopeMode, stateClass: scopeMode === 'mark' ? 'ok' : '', subText: scopeSub, to: scopeTarget },
