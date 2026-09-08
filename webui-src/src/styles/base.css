@@ -540,6 +540,18 @@ button.primary.is-busy::after,
   font-size: 1.05rem;
 }
 
+.stat-card.is-compact .value {
+  font-size: 1.05rem;
+}
+
+.stat-card.is-compact .value.is-long {
+  font-size: 0.95rem;
+}
+
+.stat-card.is-compact .value-sub {
+  font-size: 0.8rem;
+}
+
 .stat-card .value-sub {
   display: block;
   font-size: 0.9rem;
