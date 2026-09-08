@@ -2131,7 +2131,7 @@ ${green}Прямо как твой интернет.${yellow}
 zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
 ${MENU_ZAPRET2_LINE}${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
-${Fyellow}0.${yellow} Выход
+${Fcyan}0.${yellow} Выход
 ${Fcyan}001.${yellow} CDN тест (test.sh)
 ${Fcyan}01.${yellow} Проверить доступность сервисов (Тест не точен)
 ${Fcyan}1.${yellow} Фиксация стратегии профиля/безразборного блока. Текущие: ${plain}[ ${strategies_status} ]${yellow} (fallback TLS: ${plain}[$(fallback_strategy_text)]${yellow}, HTTP: ${plain}[$(fallback_http_strategy_text)]${yellow})
