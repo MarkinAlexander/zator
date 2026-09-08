@@ -1,31 +1,30 @@
-// Сборка единого архива развёртывания zator-контента: zator-deploy.tar.gz.
+// Сборка архивов развёртывания zator: zator-{core,webui,full}.tar.gz.
 //
-// Пути внутри архива относительно $ZATOR_ROOT (/opt/zator) и зеркалируют
-// карту развёртывания z2r.sh (get_repo + webui_install_files) — держать
-// синхронно с ним. Архив НЕ содержит runtime-состояние: extra_strats/cache
-// (кроме locked.lua, который z2r.sh обновляет из репозитория) и
-// lists/autohostlist.txt (копится на устройстве).
+// Пути внутри архива относительно $ZATOR_ROOT (/opt/zator) и зеркалят карту
+// развёртывания z2r.sh (get_repo + webui_install_files) — держать синхронно
+// с ним. Спецзаписи вне корня: _root/z2r.sh -> /opt/z2r.sh и
+// _payload/<rel> -> /opt/zator/.deploy-payload/<rel> (офлайн-источник для
+// z2r_download_project_file, в /opt/zapret2 автоматически не ставится).
 //
-// Файлы читаются из рабочего дерева; текстовые нормализуются в LF (включая
-// блобы, исторически закоммиченные с CRLF), бинарники (.bin и файлы с NUL)
-// не трогаются. Права: 0755 у исполняемых, 0644 у остальных, каталоги 0755.
-// Заголовки tar: uid/gid 0, mtime 0 — сборка детерминирована.
+// Классы файлов (основа защит при развёртывании):
+//   auto           — всегда заменять;
+//   keep-if-exists — класть только если на устройстве отсутствует
+//                    (пользовательские списки и custom_tls.bin);
+//   payload        — только в .deploy-payload;
+//   meta           — extra_strats/cache/deploy/{version.env,manifest.*},
+//                    в сверке не участвуют, deploy перезаписывает сам.
 //
-// Запуск: npm run pack (в webui-src). Результат в webui-src/dist/:
-//   zator-deploy.tar.gz       — архив
-//   zator-deploy.sha256       — чексумма в формате sha256sum -c
-//   zator-deploy.manifest.json — список файлов с sha256 нормализованного контента
+// Архив не содержит runtime-состояние: остальной extra_strats/cache и
+// lists/autohostlist.txt. Текстовые файлы нормализуются в LF, бинарники
+// (NUL в первых 8КБ) не трогаются. Права 0755/0644, заголовки tar с
+// uid/gid/mtime 0 — при фиксированном --version сборка детерминирована.
 //
-// Порядок развёртывания на устройстве (пока НЕ встроен в z2r.sh):
-//   1. скачать архив, проверить магию gzip (1f 8b, у busybox od -b: "037 213")
-//      и gzip -t — на случай 403/404-страницы, сохранённой как .tar.gz;
-//   2. сверить sha256 (zator-deploy.sha256, busybox sha256sum -c);
-//   3. распаковать во временную директорию /tmp (tmpfs) и заменить файлы
-//      в $ZATOR_ROOT; runtime-состояние (extra_strats/cache кроме locked.lua,
-//      lists/autohostlist.txt) архивом не затрагивается;
-//   4. повторить webui_fix_interpreters из z2r.sh: шебанг в репозитории
-//      портабельный (#!/usr/bin/env bash), на Keenetic нужен #!/opt/bin/bash;
-//   5. перезапустить webui (run-webui.sh restart).
+// Запуск (в webui-src): npm run pack [-- --variant=core|webui|full|all]
+//   [-- --version=<tag>] [-- --out <dir>] [-- --repo owner/name]
+// Результат в webui-src/dist/: на каждый вариант .tar.gz, .sha256
+// (формат sha256sum -c), .manifest.json, .manifest.tsv (шелл-читаемый,
+// путь|dest|class|sha256|size|exec); при --variant=all ещё latest.json —
+// лёгкий указатель сборки с размерами для проверки свободного места.
 
 import { gzipSync } from 'node:zlib'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
@@ -35,13 +34,79 @@ import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const outDir = join(repoRoot, 'webui-src', 'dist')
+
+const args = new Map()
+{
+  const argv = process.argv.slice(2)
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (!arg.startsWith('--')) continue
+    const eq = arg.indexOf('=')
+    if (eq > 0) {
+      args.set(arg.slice(2, eq), arg.slice(eq + 1))
+    } else {
+      const key = arg.slice(2)
+      const next = argv[i + 1]
+      if (next !== undefined && !next.startsWith('--')) {
+        args.set(key, next)
+        i++
+      } else {
+        args.set(key, '')
+      }
+    }
+  }
+}
+
+const pad2 = (n) => String(n).padStart(2, '0')
+const now = new Date()
+const stamp = `${now.getUTCFullYear()}${pad2(now.getUTCMonth() + 1)}${pad2(now.getUTCDate())}-${pad2(now.getUTCHours())}${pad2(now.getUTCMinutes())}`
+
+function stampToDateShort(value) {
+  const m = value.match(/^deploy-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/)
+  if (!m) return null
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`
+}
+
+const version = args.get('version') || `deploy-${stamp}`
+// при фиксированном --version=deploy-... даты берутся из номера — сборка детерминирована
+const dateShort = stampToDateShort(version)
+  || `${now.getUTCFullYear()}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())} ${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}`
+const variantArg = args.get('variant') || 'all'
+const outDir = resolve(repoRoot, args.get('out') || join('webui-src', 'dist'))
+
+let commit = 'unknown'
+try {
+  commit = execSync('git rev-parse --short HEAD', { cwd: repoRoot }).toString().trim()
+} catch { /* сборка вне git-репозитория */ }
+
+function detectRepo() {
+  const fromArg = args.get('repo')
+  if (fromArg) return fromRepoValue(fromArg)
+  const envRepo = process.env.GITHUB_REPOSITORY
+  if (envRepo) return fromRepoValue(envRepo)
+  try {
+    const url = execSync('git remote get-url origin', { cwd: repoRoot }).toString().trim()
+    const m = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/)
+    return m ? m[1] : null
+  } catch { return null }
+}
+function fromRepoValue(value) {
+  return value.includes('/') ? value.replace(/\.git$/, '') : null
+}
+const repoSlug = detectRepo()
+
+const ALL_VARIANTS = ['core', 'webui', 'full']
+if (variantArg !== 'all' && !ALL_VARIANTS.includes(variantArg)) {
+  console.error(`неизвестный --variant=${variantArg} (core|webui|full|all)`)
+  process.exit(1)
+}
+const buildVariants = variantArg === 'all' ? ALL_VARIANTS : [variantArg]
 
 // Z2R_LIB_FILES из z2r.sh: repo lib/ -> $ZATOR_ROOT/z2r_lib
 const Z2R_LIB_FILES = [
   'ui.sh', 'provider.sh', 'telemetry.sh', 'recommendations.sh', 'netcheck.sh',
   'premium.sh', 'strategies.sh', 'submenus.sh', 'actions.sh', 'config.sh',
-  'orchestra_state.sh',
+  'orchestra_state.sh', 'deploy.sh',
 ]
 
 // repo lists/ -> $ZATOR_ROOT/lists (список из get_repo + netrogat_substrings);
@@ -62,33 +127,66 @@ const EXTRA_STRATS = [
   ['extra_strats/TCP/RKN/Domains_By_Substring.txt', 'extra_strats/TCP_RKN_domains_by_substring.txt'],
 ]
 
-// фейки идут единым файлом fake/* -> $ZATOR_ROOT/files/fake
-const FAKE_DIR = 'fake'
-const FAKE_TARGET = 'files/fake'
+const KEEP_IF_EXISTS = new Set([
+  'lists/netrogat.txt',
+  'lists/netrogat_substrings.txt',
+  'extra_strats/TCP_Custom.txt',
+  'extra_strats/TCP_RKN_domains_by_substring.txt',
+  'files/fake/custom_tls.bin',
+])
 
-// webui: только устанавливаемое (webui_install_files), без dev/
+const DEPLOY_CACHE = 'extra_strats/cache/deploy'
+
+function defaultDest(archivePath) {
+  if (archivePath === '_root/z2r.sh') return '/opt/z2r.sh'
+  if (archivePath.startsWith('_payload/')) {
+    return `/opt/zator/.deploy-payload/${archivePath.slice('_payload/'.length)}`
+  }
+  return `/opt/zator/${archivePath}`
+}
+
+const specs = []
+function add(archivePath, repoPath, { executable = false, cls = 'auto', comp = 'core', dest } = {}) {
+  if (KEEP_IF_EXISTS.has(archivePath)) cls = 'keep-if-exists'
+  specs.push({ archivePath, repoPath, executable, cls, comp, dest: dest || defaultDest(archivePath) })
+}
+
 const webuiCgi = readdirSync(join(repoRoot, 'webui', 'cgi-bin')).sort()
+const blockcheckZ4r = readdirSync(join(repoRoot, 'blockcheck2.d', 'z4r')).sort()
 
-// [путь в архиве, путь в репо, исполняемый?]
-const files = [
-  ...Z2R_LIB_FILES.map((name) => [`z2r_lib/${name}`, `lib/${name}`, false]),
-  ...readdirSync(join(repoRoot, 'lua')).sort().map((name) => [`lua/${name}`, `lua/${name}`, name === 'strategy-validator.sh']),
-  ...LISTS.map((name) => [`lists/${name}`, `lists/${name}`, false]),
-  ...EXTRA_STRATS.map(([from, to]) => [to, from, false]),
-  ['extra_strats/cache/orchestra/locked.lua', 'orchestra/locked.lua', false],
-  ['webui/run-webui.sh', 'webui/run-webui.sh', true],
-  ...webuiCgi.map((name) => [`webui/cgi-bin/${name}`, `webui/cgi-bin/${name}`, true]),
-  ['webui/www/index.html', 'webui/index.html', false],
-  ['webui/www/styles.css', 'webui/styles.css', false],
-  ['webui/www/app.js', 'webui/app.js', false],
-  ['webui/www/favicon.svg', 'webui/favicon.svg', false],
-  ['firewall/client-scope-iptables.sh', 'firewall/client-scope-iptables.sh', true],
-  ['firewall/client-scope-nft.sh', 'firewall/client-scope-nft.sh', true],
-  ['data/providers/asn.txt', 'data/providers/asn.txt', false],
-]
+for (const name of Z2R_LIB_FILES) add(`z2r_lib/${name}`, `lib/${name}`)
+for (const name of readdirSync(join(repoRoot, 'lua')).sort()) {
+  add(`lua/${name}`, `lua/${name}`, { executable: name === 'strategy-validator.sh' })
+}
+for (const name of LISTS) add(`lists/${name}`, `lists/${name}`)
+for (const [from, to] of EXTRA_STRATS) add(to, from)
+add('extra_strats/cache/orchestra/locked.lua', 'orchestra/locked.lua')
+for (const name of ['client-scope-iptables.sh', 'client-scope-nft.sh']) {
+  add(`firewall/${name}`, `firewall/${name}`, { executable: true })
+}
+add('data/providers/asn.txt', 'data/providers/asn.txt')
+for (const name of readdirSync(join(repoRoot, 'fake')).sort()) {
+  add(`files/fake/${name}`, `fake/${name}`)
+}
 
-for (const name of readdirSync(join(repoRoot, FAKE_DIR)).sort()) {
-  files.push([`${FAKE_TARGET}/${name}`, `${FAKE_DIR}/${name}`, false])
+add('_root/z2r.sh', 'z2r.sh', { executable: true })
+add('_payload/config.default', 'config.default', { cls: 'payload' })
+add('_payload/Entware/keenetic-policy.sh', 'Entware/keenetic-policy.sh', { cls: 'payload', executable: true })
+for (const name of blockcheckZ4r) {
+  add(`_payload/blockcheck2.d/z4r/${name}`, `blockcheck2.d/z4r/${name}`, {
+    cls: 'payload', executable: name.endsWith('.sh'),
+  })
+}
+
+add('webui/run-webui.sh', 'webui/run-webui.sh', { executable: true, comp: 'webui' })
+for (const name of webuiCgi) {
+  add(`webui/cgi-bin/${name}`, `webui/cgi-bin/${name}`, { executable: true, comp: 'webui' })
+}
+for (const [wwwName, repoName] of [
+  ['index.html', 'index.html'], ['styles.css', 'styles.css'],
+  ['app.js', 'app.js'], ['favicon.svg', 'favicon.svg'],
+]) {
+  add(`webui/www/${wwwName}`, `webui/${repoName}`, { comp: 'webui' })
 }
 
 function isBinary(buf) {
@@ -101,11 +199,44 @@ function readDeployContent(repoPath) {
   return Buffer.from(raw.toString('utf8').replace(/\r\n/g, '\n'), 'utf8')
 }
 
+const sha256 = (data) => createHash('sha256').update(data).digest('hex')
+
+for (const spec of specs) {
+  try {
+    const body = readDeployContent(spec.repoPath)
+    spec.body = body
+    spec.sha256 = sha256(body)
+    spec.size = body.length
+  } catch {
+    console.error(`отсутствует исходник: ${spec.repoPath}`)
+    process.exit(1)
+  }
+}
+
+const contentSha = (component) => sha256(
+  specs.filter((s) => s.comp === component).map((s) => s.sha256).join(''),
+)
+const zatorSha = contentSha('core')
+const webuiSha = contentSha('webui')
+
+function versionEnv() {
+  return [
+    `ZATOR_VERSION="${version}"`,
+    `ZATOR_DATE="${dateShort}"`,
+    `ZATOR_COMMIT="${commit}"`,
+    `ZATOR_SHA="${zatorSha}"`,
+    `WEBUI_VERSION="${version}"`,
+    `WEBUI_DATE="${dateShort}"`,
+    `WEBUI_SHA="${webuiSha}"`,
+    'TRACKING="latest"',
+    '',
+  ].join('\n')
+}
+
 // --- минимальный ustar-писатель (без внешних зависимостей) ---
 
 function octal(value, length) {
-  const str = value.toString(8).padStart(length - 1, '0')
-  return `${str}\0`
+  return `${value.toString(8).padStart(length - 1, '0')}\0`
 }
 
 function splitName(name) {
@@ -120,11 +251,11 @@ function tarHeader(entry) {
   const { name, prefix } = splitName(entry.name)
   head.write(name, 0)
   head.write(octal(entry.mode ?? 0o644, 8), 100)
-  head.write(octal(0, 8), 108) // uid
-  head.write(octal(0, 8), 116) // gid
+  head.write(octal(0, 8), 108)
+  head.write(octal(0, 8), 116)
   head.write(octal(entry.size ?? 0, 12), 124)
-  head.write(octal(0, 12), 136) // mtime
-  head.write('        ', 148) // чексумма-заглушка
+  head.write(octal(0, 12), 136)
+  head.write('        ', 148)
   head.write(entry.type, 156)
   if (entry.linkname) head.write(entry.linkname, 157)
   head.write('ustar\0', 257)
@@ -148,49 +279,105 @@ function tarEntry(entry) {
   return Buffer.concat(blocks)
 }
 
-// --- сборка ---
+// --- сборка варианта ---
 
-const dirs = new Set()
-for (const [archivePath] of files) {
-  let dir = dirname(archivePath)
-  while (dir && dir !== '.') {
-    dirs.add(dir)
-    dir = dirname(dir)
+function buildVariant(variant) {
+  const picked = specs.filter((s) => variant === 'full' || s.comp === variant)
+  const manifestRows = picked.map((s) => [s.archivePath, s.dest, s.cls, s.sha256, s.size, s.executable ? 1 : 0].join('|'))
+  const manifestTsvBuf = Buffer.from(`# path|dest|class|sha256|size|exec\n${manifestRows.join('\n')}\n`, 'utf8')
+  const versionEnvBuf = Buffer.from(versionEnv(), 'utf8')
+
+  const manifest = {
+    generatedBy: 'pack-zator-tar.mjs',
+    version,
+    buildDate: `${dateShort} UTC`,
+    commit,
+    variant,
+    zatorSha,
+    webuiSha,
+    entries: picked.map((s) => ({ path: s.archivePath, dest: s.dest, class: s.cls, sha256: s.sha256, size: s.size })),
+    totals: { unpackedBytes: 0, files: picked.length },
   }
+  // unpackedBytes без учёта manifest.json: его размер зависит от totals
+  manifest.totals.unpackedBytes = picked.reduce((sum, s) => sum + s.size, 0)
+    + versionEnvBuf.length + manifestTsvBuf.length
+  const manifestJsonBuf = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+
+  const metaEntries = [
+    { archivePath: `${DEPLOY_CACHE}/version.env`, body: versionEnvBuf },
+    { archivePath: `${DEPLOY_CACHE}/manifest.tsv`, body: manifestTsvBuf },
+    { archivePath: `${DEPLOY_CACHE}/manifest.json`, body: manifestJsonBuf },
+  ]
+  for (const meta of metaEntries) {
+    meta.sha256 = sha256(meta.body)
+    meta.size = meta.body.length
+  }
+
+  const allPaths = [...picked.map((s) => s.archivePath), ...metaEntries.map((m) => m.archivePath)]
+  const dirs = new Set()
+  for (const p of allPaths) {
+    let dir = dirname(p)
+    while (dir && dir !== '.') {
+      dirs.add(dir)
+      dir = dirname(dir)
+    }
+  }
+
+  const entries = []
+  for (const dir of [...dirs].sort()) {
+    entries.push(tarEntry({ name: `${dir}/`, type: '5', mode: 0o755 }))
+  }
+  for (const s of picked) {
+    entries.push(tarEntry({ name: s.archivePath, type: '0', mode: s.executable ? 0o755 : 0o644, size: s.size, body: s.body }))
+  }
+  for (const m of metaEntries) {
+    entries.push(tarEntry({ name: m.archivePath, type: '0', mode: 0o644, size: m.size, body: m.body }))
+  }
+  if (variant !== 'core') {
+    entries.push(tarEntry({ name: 'webui/www/cgi-bin', type: '2', mode: 0o777, linkname: '../cgi-bin' }))
+  }
+
+  let tar = Buffer.concat(entries)
+  tar = Buffer.concat([tar, Buffer.alloc(10240 - ((tar.length + 1024) % 10240) + 1024)])
+  const gz = gzipSync(tar, { mtime: 0 })
+  const gzSha = sha256(gz)
+
+  const name = `zator-${variant}`
+  mkdirSync(outDir, { recursive: true })
+  writeFileSync(join(outDir, `${name}.tar.gz`), gz)
+  writeFileSync(join(outDir, `${name}.sha256`), `${gzSha}  ${name}.tar.gz\n`)
+  writeFileSync(join(outDir, `${name}.manifest.json`), `${JSON.stringify(manifest, null, 2)}\n`)
+  writeFileSync(join(outDir, `${name}.manifest.tsv`), manifestTsvBuf)
+
+  return { variant, name: `${name}.tar.gz`, size: gz.length, sha256: gzSha, unpackedSize: manifest.totals.unpackedBytes, files: picked.length, dirs: dirs.size }
 }
 
-const entries = []
-for (const dir of [...dirs].sort()) {
-  entries.push(tarEntry({ name: `${dir}/`, type: '5', mode: 0o755 }))
-}
-const manifest = { generatedBy: 'pack-zator-tar.mjs', commit: '', entries: [] }
-try {
-  manifest.commit = execSync('git rev-parse --short HEAD', { cwd: repoRoot }).toString().trim()
-} catch {
-  manifest.commit = 'unknown'
-}
-for (const [archivePath, repoPath, executable] of files) {
-  const body = readDeployContent(repoPath)
-  const sha = createHash('sha256').update(body).digest('hex')
-  manifest.entries.push({ path: archivePath, sha256: sha, size: body.length })
-  entries.push(tarEntry({ name: archivePath, type: '0', mode: executable ? 0o755 : 0o644, size: body.length, body }))
-}
-// симлинк www/cgi-bin -> ../cgi-bin, как в webui_install_files
-entries.push(tarEntry({ name: 'webui/www/cgi-bin', type: '2', mode: 0o777, linkname: '../cgi-bin' }))
+const results = buildVariants.map(buildVariant)
 
-let tar = Buffer.concat(entries)
-// корректное завершение: два нулевых блока + добивка до размера записи 10240
-tar = Buffer.concat([tar, Buffer.alloc(10240 - ((tar.length + 1024) % 10240) + 1024)])
+if (variantArg === 'all') {
+  const assets = {}
+  for (const r of results) {
+    assets[r.variant] = {
+      name: r.name, size: r.size, sha256: r.sha256, unpackedSize: r.unpackedSize,
+      ...(repoSlug ? { url: `https://github.com/${repoSlug}/releases/download/latest/${r.name}` } : {}),
+    }
+  }
+  const latest = {
+    schemaVersion: 1,
+    release: version,
+    buildDate: `${dateShort} UTC`,
+    commit,
+    zatorSha,
+    webuiSha,
+    zatorDate: dateShort,
+    webuiDate: dateShort,
+    assets,
+  }
+  writeFileSync(join(outDir, 'latest.json'), `${JSON.stringify(latest, null, 2)}\n`)
+}
 
-const gz = gzipSync(tar, { mtime: 0 })
-mkdirSync(outDir, { recursive: true })
-const gzPath = join(outDir, 'zator-deploy.tar.gz')
-writeFileSync(gzPath, gz)
-writeFileSync(join(outDir, 'zator-deploy.sha256'), `${createHash('sha256').update(gz).digest('hex')}  zator-deploy.tar.gz\n`)
-writeFileSync(join(outDir, 'zator-deploy.manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-
-console.log(`commit: ${manifest.commit}`)
-console.log(`files: ${manifest.entries.length} + symlink webui/www/cgi-bin, dirs: ${dirs.size}`)
-console.log(`tar: ${(tar.length / 1024).toFixed(0)} KB, gz: ${(gz.length / 1024).toFixed(0)} KB`)
-console.log(`sha256: ${createHash('sha256').update(gz).digest('hex')}`)
-console.log(`out: ${gzPath}`)
+console.log(`version: ${version}  commit: ${commit}  repo: ${repoSlug || '-'}`)
+for (const r of results) {
+  console.log(`${r.variant}: files ${r.files}, dirs ${r.dirs}, gz ${(r.size / 1024).toFixed(0)} KB, unpacked ${(r.unpackedSize / 1024).toFixed(0)} KB, sha256 ${r.sha256.slice(0, 12)}...`)
+}
+console.log(`out: ${outDir}`)
