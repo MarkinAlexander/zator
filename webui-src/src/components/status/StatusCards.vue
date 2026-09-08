@@ -45,10 +45,7 @@ const cards = computed<CardDef[]>(() => {
   let verClass = ''
   if (ver?.update_available) {
     verValue = 'Есть обновление'
-    verClass = 'bad'
-  } else if (ver?.zator_date && ver?.latest_zator_date) {
-    verValue = 'Нет обновлений'
-    verClass = 'ok'
+    verClass = 'info'
   }
 
   return [
