@@ -510,6 +510,40 @@ config_last_modified() {
   printf '%s\n' "${header:-Неизвестно}"
 }
 
+# Короткая версия установленного nfqws2 (zapret2) из --version:
+# github-сборки 'v1.0.5.1+a1bca5a' (хеш укорочен до 8 символов),
+# self-built 'self-built Aug 25 2026 17:08:09'. Пустая строка, если
+# бинарника нет. Никогда не падает (вызывается из шапки меню и WebUI).
+zapret2_version_short() {
+  local bin out v base hash
+  bin="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+  [ -x "$bin" ] || bin="$(command -v nfqws2 2>/dev/null)"
+  [ -n "$bin" ] || return 0
+  out="$("$bin" --version 2>/dev/null | head -n 1)"
+  case "$out" in
+    *"github version "*)
+      v="${out##*github version }"
+      v="${v%% lua_compat*}"
+      base="${v%% (*}"
+      base="${base% }"
+      hash="${v##*(}"
+      hash="${hash%%)*}"
+      if [ -n "$hash" ]; then
+        hash="$(printf '%s' "$hash" | cut -c1-8)"
+        printf '%s+%s' "$base" "$hash"
+      else
+        printf '%s' "$base"
+      fi
+      ;;
+    *"self-built version "*)
+      v="self-built ${out##*self-built version }"
+      v="${v%% lua_compat*}"
+      printf '%s' "$v"
+      ;;
+  esac
+  return 0
+}
+
 menu_config_snapshot() {
   local cfg="$1"
 

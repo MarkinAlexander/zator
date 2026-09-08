@@ -52,7 +52,7 @@ const cards = computed<CardDef[]>(() => {
 
   return [
     { label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: verClass === '' },
-    { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad' },
+    { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad', subText: ver?.zapret2_version || undefined },
     { label: 'Локи стратегий', value: data.strategy_locks_status ?? '—', to: '/strategies' },
     { label: 'Client scopes', value: scopeMode, stateClass: scopeMode === 'mark' ? 'ok' : '', subText: scopeSub, to: scopeTarget },
     { label: 'Безразборный режим', value: fallbackState, stateClass: fallbackState === 'включен' ? 'ok' : '', to: '/settings/fallback' },
