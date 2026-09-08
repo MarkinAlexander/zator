@@ -145,7 +145,11 @@ EOF
   zator_sha="$(deploy_version_field ZATOR_SHA)"
   webui_sha="$(deploy_version_field WEBUI_SHA)"
   [ -n "$zator_sha" ] && [ "$zator_sha" != "$DEPLOY_META_ZATOR_SHA" ] && DEPLOY_UPDATE_ZATOR=1
-  [ -n "$webui_sha" ] && [ "$webui_sha" != "$DEPLOY_META_WEBUI_SHA" ] && DEPLOY_UPDATE_WEBUI=1
+  # без установленной панели обновлять нечего: WEBUI_SHA в version.env
+  # присутствует даже на core-установках (общая сборка)
+  if [ -e "$ZATOR_ROOT/webui/run-webui.sh" ]; then
+    [ -n "$webui_sha" ] && [ "$webui_sha" != "$DEPLOY_META_WEBUI_SHA" ] && DEPLOY_UPDATE_WEBUI=1
+  fi
   if [ "$DEPLOY_UPDATE_ZATOR" = 1 ] || [ "$DEPLOY_UPDATE_WEBUI" = 1 ]; then
     echo -e "${yellow}Есть обновление:${plain}"
     [ "$DEPLOY_UPDATE_ZATOR" = 1 ] && echo -e "  zator от ${green}$DEPLOY_META_ZATOR_DATE${plain}"
@@ -690,8 +694,16 @@ deploy_menu_header() {
   [ -n "$MENU_ZATOR_DATE" ] || MENU_ZATOR_DATE="неизвестно"
   [ -n "$MENU_WEBUI_DATE" ] || MENU_WEBUI_DATE="неизвестно"
   [ -n "$MENU_DEPLOY_TRACKING" ] || MENU_DEPLOY_TRACKING="latest"
+  # без установленной панели ничего про неё не пишем: поля WEBUI_* в
+  # version.env приходят из общей сборки даже для core-варианта
+  MENU_WEBUI_PART=""
+  local has_webui=0 what=""
+  if [ -e "$ZATOR_ROOT/webui/run-webui.sh" ]; then
+    has_webui=1
+    MENU_WEBUI_PART=", Web-панель от: ${plain}${MENU_WEBUI_DATE}${yellow}"
+  fi
   MENU_DEPLOY_NOTICE=""
-  local zsha wsha lz lw what=""
+  local zsha wsha lz lw
   zsha="$(deploy_version_field ZATOR_SHA)"
   wsha="$(deploy_version_field WEBUI_SHA)"
   lz="$(deploy_latest_field LATEST_ZATOR_SHA)"
@@ -699,7 +711,7 @@ deploy_menu_header() {
   if [ -n "$lz" ] && [ -n "$zsha" ] && [ "$zsha" != "$lz" ]; then
     what="zator от $(deploy_latest_field LATEST_ZATOR_DATE)"
   fi
-  if [ -n "$lw" ] && [ -n "$wsha" ] && [ "$wsha" != "$lw" ]; then
+  if [ "$has_webui" = 1 ] && [ -n "$lw" ] && [ -n "$wsha" ] && [ "$wsha" != "$lw" ]; then
     [ -n "$what" ] && what="$what, "
     what="${what}Web-панель от $(deploy_latest_field LATEST_WEBUI_DATE)"
   fi
@@ -717,7 +729,7 @@ deploy_update_menu() {
     clear -x
     echo -e "${Fcyan}============ Обновление zator и zapret2 ============${plain}"
     deploy_menu_header
-    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}, Web-панель от: ${green}${MENU_WEBUI_DATE}${yellow}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}"
+    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}"
     echo ""
     submenu_item 1 "Проверить обновления (даты zator/webui: локально vs сервер)"
     submenu_item 2 "Обновить zator (код, листы, lua; панель не трогается)"
@@ -749,13 +761,6 @@ deploy_update_menu() {
           echo -e "${green}Ядро zator актуально, есть обновление Web-панели — п.3.${plain}"
         else
           echo -e "${green}Ядро zator актуально.${plain}"
-        fi
-        if [ "$variant" = "core" ] && [ "$DEPLOY_UPDATE_WEBUI" = "1" ]; then
-          echo -e "${yellow}Есть обновление Web-панели, но она не установлена.${plain}"
-          read -re -p $'\033[33mУстановить Web-панель (~3МБ места)? 1 - Да, Enter - нет\033[0m\n' webui_answer
-          if [ "$webui_answer" = "1" ] && type webui_install >/dev/null 2>&1; then
-            webui_install || true
-          fi
         fi
         pause_enter
         ;;
