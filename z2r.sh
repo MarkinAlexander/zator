@@ -1993,6 +1993,12 @@ get_menu() {
     MENU_ZATOR_DATE="неизвестно"
     MENU_WEBUI_DATE="неизвестно"
     MENU_DEPLOY_NOTICE=""
+    MENU_ZAPRET2_LINE=""
+    MENU_ZAPRET2_VER="$(zapret2_version_short)" || MENU_ZAPRET2_VER=""
+    if [ -n "$MENU_ZAPRET2_VER" ]; then
+      MENU_ZAPRET2_LINE="zapret2 (nfqws2): ${plain}${MENU_ZAPRET2_VER}${yellow}
+"
+    fi
     if type deploy_menu_header >/dev/null 2>&1; then
       deploy_menu_header
     fi
@@ -2029,7 +2035,7 @@ ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
 zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
-${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
+${MENU_ZAPRET2_LINE}${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
 ${Fyellow}0.${yellow} Выход
 ${Fcyan}001.${yellow} CDN тест (test.sh)

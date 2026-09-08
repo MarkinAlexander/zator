@@ -144,14 +144,19 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
 }
 ```
 
-Секция `version` — установленная версия zator/Web-панели (из
+Секция `version` — версия nfqws2 (парсится из `nfqws2 --version`
+хелпером `zapret2_version_short` в `lib/config.sh`, короткий вид
+`v1.0.5.1+a1bca5a`), установленная версия zator/Web-панели (из
 `/opt/zator/extra_strats/cache/deploy/version.env`, пишется tar-развёртыванием)
 и флаг наличия обновления (сравнение sha с `latest.env`, который обновляет
-лаунчер `z2r` или п.5 меню при проверке). Без `lib/deploy.sh` на устройстве
-секция приходит с `"zator_version":"unknown"` и `"update_available":false`:
+лаунчер `z2r` или п.5 меню при проверке). `zapret2_version` приходит всегда,
+когда найден бинарник (пустая строка — бинарника нет). Без `lib/deploy.sh`
+на устройстве секция приходит с `"zator_version":"unknown"` и
+`"update_available":false`:
 
 ```jsonc
 "version": {
+  "zapret2_version": "v1.0.5.1+a1bca5a",  // из nfqws2 --version (github/self-built)
   "zator_version": "deploy-20260901-1200",
   "zator_date": "2026-09-01 12:00",
   "webui_version": "deploy-20260901-1200",

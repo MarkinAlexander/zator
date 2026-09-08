@@ -152,6 +152,7 @@ export interface DomainsImportResult {
 }
 
 export interface VersionInfo {
+  zapret2_version: string
   zator_version: string
   zator_date: string
   webui_version: string
