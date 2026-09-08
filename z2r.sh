@@ -54,6 +54,7 @@ Z2R_INSTALLER_URL="${Z2R_INSTALLER_URL:-${Z2R_PROJECT_RAW_BASE}/z2r.sh}"
 ZAPRET2_UPSTREAM_RAW_BASE="${ZAPRET2_UPSTREAM_RAW_BASE:-https://raw.githubusercontent.com/bol-van/zapret2/master}"
 ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-https://git.px.rkn.quest/zapret2/plain}"
 ZAPRET2_RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2/releases/download}"
+ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/MarkinAlexander/zapret2/releases/download}"
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
@@ -234,6 +235,15 @@ z2r_download_zapret2_release() {
   local yadisk=""
 
   rm -f "$dest"
+
+  if [ "$(zapret2_flavor_load)" = fork ]; then
+    # форк-релизы живут только на GitHub форка: зеркал и Яндекс.Диска нет
+    primary="${ZAPRET2_FORK_RELEASE_BASE}/v${ver}/${tarfile}"
+    z2r_fetch_url_to_file "$dest" "$primary" && return 0
+    rm -f "$dest"
+    return 1
+  fi
+
   if z2r_fetch_url_to_file "$dest" "$primary"; then
     return 0
   fi
@@ -1257,10 +1267,81 @@ zator_remove() {
   echo -e "${green}Каталог zator удалён: $ZATOR_ROOT${plain}"
 }
 
+# ---------------------------------------------------------- выбор сборки zapret2
+# official: релизы bol-van (GitHub + зеркала + Яндекс.Диск).
+# fork: релизы форка MarkinAlexander/zapret2 — официальный код плюс патч
+# десинка TLS reasm для платформ с аппаратным fastpath (MT7621/FASTNAT,
+# KN-1011) с автодетектом; живут только на GitHub форка.
+zapret2_flavor_file() {
+  printf '%s/extra_strats/cache/zapret2_flavor' "${ZATOR_ROOT:-/opt/zator}"
+}
+
+zapret2_flavor_load() {
+  local v
+  v="$(head -n1 "$(zapret2_flavor_file)" 2>/dev/null | tr -d ' \r\n')"
+  case "$v" in
+    fork) echo fork ;;
+    *)    echo official ;;
+  esac
+}
+
+zapret2_flavor_save() { # zapret2_flavor_save fork|official
+  [ "$1" = fork ] || [ "$1" = official ] || return 1
+  local file
+  file="$(zapret2_flavor_file)"
+  mkdir -p "$(dirname "$file")" 2>/dev/null
+  printf '%s\n' "$1" > "$file" 2>/dev/null
+}
+
+# Валидация версии zapret2 для текущего flavor: официальный формат
+# 1.0.5.1, у форка допустим суффикс сборки (1.0.5.1-reasm-fix).
+z2r_version_valid() {
+  local v="$1"
+  [ ${#v} -le 40 ] || return 1
+  if [ "$(zapret2_flavor_load)" = fork ]; then
+    printf '%s' "$v" | grep -Eq '^[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?$'
+    return $?
+  fi
+  printf '%s' "$v" | grep -Eq '^[0-9]+(\.[0-9]+)*$'
+}
+
+zapret2_flavor_prompt() {
+  local cur def num file
+  [ "${Z2R_OFFLINE:-0}" = "1" ] && return 0
+  file="$(zapret2_flavor_file)"
+  cur="$(zapret2_flavor_load)"
+  def=1
+  [ "$cur" = fork ] && def=2
+  # первый запуск (нет сохранённого выбора): на Keenetic по умолчанию форк
+  if [ ! -s "$file" ] && [ "${hardware:-}" = "keenetic" ]; then
+    def=2
+  fi
+  echo -e "${cyan}Сборка zapret2:${plain}"
+  echo -e "  1) официальная bol-van"
+  echo -e "  2) форк: официальный код + патч TLS reasm для hardware fastpath"
+  if [ "${hardware:-}" = "keenetic" ]; then
+    echo -e "${green}На Keenetic рекомендуется вариант 2: патч чинит десинк TLS reasm${plain}"
+    echo -e "${green}на платформах с аппаратным fastpath (MT7621/FASTNAT, KN-1011).${plain}"
+  fi
+  while true; do
+    read -re -p "Выбор сборки [${def}]: " num || num=""
+    [ -z "$num" ] && num="$def"
+    case "$num" in
+      1) zapret2_flavor_save official
+         echo -e "${green}Выбрано: официальная сборка bol-van${plain}"
+         return 0 ;;
+      2) zapret2_flavor_save fork
+         echo -e "${green}Выбрано: форк с патчем TLS reasm${plain}"
+         return 0 ;;
+      *) echo "Введите 1 или 2 (Enter = ${def})." ;;
+    esac
+  done
+}
+
 #Запрос желаемой версии zapret2
 version_select() {
    if [ -n "${ZAPRET2_VERSION:-}" ]; then
-    if ! printf '%s\n' "$ZAPRET2_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+    if ! z2r_version_valid "$ZAPRET2_VERSION"; then
       echo -e "${red}Некорректная версия zapret2 из архива: $ZAPRET2_VERSION${plain}"
       return 1
     fi
@@ -1272,7 +1353,11 @@ version_select() {
 	read -re -p $'\033[0;32mВведите желаемую версию zapret2 (Enter для новейшей версии): \033[0m' VER
     # Если пустой ввод — берем значение по умолчанию
 	if [ -z "$VER" ]; then
-		lastest_release="https://api.github.com/repos/bol-van/zapret2/releases/latest"
+		if [ "$(zapret2_flavor_load)" = fork ]; then
+			lastest_release="https://api.github.com/repos/MarkinAlexander/zapret2/releases/latest"
+		else
+			lastest_release="https://api.github.com/repos/bol-van/zapret2/releases/latest"
+		fi
 	    # проверяем результаты по порядку
 		echo -e "${yellow}Поиск последней версии...${plain}"
     	VER1=$(curl -sL $lastest_release | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
@@ -1303,15 +1388,14 @@ version_select() {
     	fi
     	break
 	fi
-    #Считаем длину
-    LEN=${#VER}
-    #Проверка длины и простая валидация формата (цифры и точки)
-    if [ "$LEN" -gt 5 ]; then
-        echo "Некорректный ввод. Максимальная длина — 5 символов. Попробуйте снова."
-        continue
-    elif ! echo "$VER" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+    #Валидация формата (для форка допустим суффикс сборки)
+    if ! z2r_version_valid "$VER"; then
+      if [ "$(zapret2_flavor_load)" = fork ]; then
+        echo "Некорректный формат версии. Пример: 1.0.5.1 или 1.0.5.1-reasm-fix"
+      else
         echo "Некорректный формат версии. Пример: 0.8.2"
-        continue
+      fi
+      continue
     fi
     echo "Будет использоваться версия: $VER"
     break
@@ -2387,6 +2471,7 @@ while true; do
  else
   echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
  fi
+ zapret2_flavor_prompt
  version_select
  
  #Скачивание, распаковка архива zapret2 и его удаление
