@@ -111,6 +111,15 @@ z2r_download_project_file() {
     fi
   fi
 
+  # Локальный payload из tar-развёртывания (config.default, keenetic-policy,
+  # blockcheck-инпуты) — офлайн-источник перед сетью.
+  if [ -n "${DEPLOY_PAYLOAD_DIR:-}" ] && [ -f "$DEPLOY_PAYLOAD_DIR/$rel" ]; then
+    mkdir -p "$(dirname "$dest")"
+    cp -f "$DEPLOY_PAYLOAD_DIR/$rel" "$tmp" || return 1
+    mv -f "$tmp" "$dest"
+    return 0
+  fi
+
   mirror="$(z2r_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
   rm -f "$tmp"
@@ -413,6 +422,14 @@ source "$LIB_DIR/submenus.sh"
 # Функции: backup_strats, menu_action_update_config_reset,
 #          fwtype_apply, menu_action_toggle_udp_range, menu_action_set_tls_blob
 source "$LIB_DIR/actions.sh"
+
+# Развёртывание из tar-релизов и подменю обновлений (п.5). Не обязательный
+# модуль: на старых установках его нет, меню п.5 деградирует до прежнего
+# поведения. Лаунчер z2r вызывает его и standalone.
+# Функции: deploy_from_tar, deploy_check_latest, deploy_update_menu
+if [ -f "$LIB_DIR/deploy.sh" ]; then
+  source "$LIB_DIR/deploy.sh"
+fi
 
 # Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
 # из TCP_Custom.txt (старые обновления затирали список), возвращаются в список.
@@ -1955,6 +1972,12 @@ get_menu() {
     local _cfg_file
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
+    MENU_ZATOR_DATE="неизвестно"
+    MENU_WEBUI_DATE="неизвестно"
+    MENU_DEPLOY_NOTICE=""
+    if type deploy_menu_header >/dev/null 2>&1; then
+      deploy_menu_header
+    fi
     MENU_ERR_LINE=""
     MENU_ERR_STATE=""
     if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
@@ -1987,9 +2010,9 @@ ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
-${MENU_ERR_LINE}${TITLE_MENU_LINE}
+zator от: ${plain}${MENU_ZATOR_DATE}${yellow}, Web-панель от: ${plain}${MENU_WEBUI_DATE}${yellow}
+${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
-Enter (без цифр) - переустановка/обновление zapret2
 ${Fyellow}0.${yellow} Выход
 ${Fcyan}001.${yellow} CDN тест (test.sh)
 ${Fcyan}01.${yellow} Проверить доступность сервисов (Тест не точен)
@@ -1997,7 +2020,7 @@ ${Fcyan}1.${yellow} Фиксация стратегии профиля/безр�
 ${Fcyan}2.${yellow} Стоп/старт zapret2, ${Fcyan}22${yellow} - рестарт (сейчас: $(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}"))
 ${Fcyan}3.${yellow} Запуск blockcheck2 и сохранение SUMMARY
 ${Fcyan}4.${yellow} Удаление zator и zapret2, ${Fcyan} 44.${yellow} Удаление zapret2
-${Fcyan}5.${yellow} Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
+${Fcyan}5.${yellow} Обновление zator и zapret2 (релизы, стратегии, листы)
 ${Fcyan}6.${yellow} Управление доменами
 ${Fcyan}7.${yellow} Открыть в редакторе config (Установит nano редактор ~250kb)
 ${Fcyan}8.${yellow} Антиспуф DNS (UDP:53): защита от подмены DNS-ответов провайдером. Сейчас: ${plain}[${MENU_DNS_DESINC}]${yellow}
@@ -2022,19 +2045,6 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     fi
   read -re -p "" answer_menu
     case "$answer_menu" in
-  "")
-    echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
-    echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
-    read -r ans
-    if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-      # подтверждение: выходим из get_menu и уходим в “тело” (переустановка/обновление)
-      return 0
-    else
-      # отмена: остаёмся в меню, цикл while true продолжится
-      :
-    fi
-    ;;
-
   "0")
     echo "Выход выполнен"
     exit 0
@@ -2125,17 +2135,27 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "5")
-    backup_helper_ask_and_create
-    # Сетевые сбои не должны ронять меню (set -e): модули не критичны,
-    # прежние версии продолжают работать.
-    locked_lua_update_from_repo || echo -e "${yellow}locked.lua не обновлён (сеть недоступна).${plain}"
-    circular_runtime_update_from_repo || echo -e "${yellow}Lua-модули circular не обновлены (сеть недоступна).${plain}"
-    strategy_validator_install_service || true
-    mkdir -p "$ORCH_DIR"
-    chmod 777 "$ORCH_DIR" 2>/dev/null || true
-    menu_action_update_config_reset || true
-    backup_update_offer_restore
-    pause_enter
+    if type deploy_update_menu >/dev/null 2>&1; then
+      deploy_update_menu
+    else
+      echo -e "${yellow}Обновление из релизов недоступно: нет lib/deploy.sh (обновитесь через лаунчер z2r). Прежнее поведение:${plain}"
+      backup_helper_ask_and_create
+      # Сетевые сбои не должны ронять меню (set -e): модули не критичны,
+      # прежние версии продолжают работать.
+      locked_lua_update_from_repo || echo -e "${yellow}locked.lua не обновлён (сеть недоступна).${plain}"
+      circular_runtime_update_from_repo || echo -e "${yellow}Lua-модули circular не обновлены (сеть недоступна).${plain}"
+      strategy_validator_install_service || true
+      mkdir -p "$ORCH_DIR"
+      chmod 777 "$ORCH_DIR" 2>/dev/null || true
+      menu_action_update_config_reset || true
+      backup_update_offer_restore
+      pause_enter
+    fi
+    # «Обновить/переустановить zapret2» из подменю: тот же путь, что Enter.
+    if [ "$DEPLOY_WANT_REINSTALL" = "1" ]; then
+      DEPLOY_WANT_REINSTALL=0
+      return 0
+    fi
     ;;
 
   "6")
