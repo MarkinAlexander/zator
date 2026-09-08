@@ -40,7 +40,9 @@ const cards = computed<CardDef[]>(() => {
   const verParts: string[] = []
   if (ver?.zator_date) verParts.push(`zator от ${ver.zator_date}`)
   if (ver?.webui_date) verParts.push(`Web-панель от ${ver.webui_date}`)
-  const verSub = verParts.length ? verParts.join(' · ') : undefined
+  const verSub = ver?.update_available
+    ? (verParts.length ? verParts.join(' · ') : undefined)
+    : (ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined)
   let verValue = ver?.zator_date || '—'
   let verClass = ''
   if (ver?.update_available) {
