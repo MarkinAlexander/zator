@@ -6,7 +6,7 @@ name: deploy-tar
 # Релизы:
 #   latest — rolling, тег latest, пересоздаётся (prerelease), его качает
 #            лаунчер при обычном режиме (stable URL releases/download/latest/...);
-#   <version> — неизменяемый номерной (deploy-YYYYMMDD-HHMM или ручной номер),
+#   <version> — неизменяемый номерной (stable-YYYYMMDD-HHMM или ручной номер),
 #            для пина/отката (stable URL releases/download/<tag>/...).
 #
 # Ассеты каждого релиза: zator-<variant>.tar.gz + .sha256 + .manifest.json +
@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Номер релиза (пусто = deploy-<UTC таймстамп>)'
+        description: 'Номер релиза (пусто = stable-<UTC таймстамп>)'
         required: false
         default: ''
       update_latest:
@@ -73,7 +73,7 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=deploy-$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
+            echo "tag=stable-$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Recreate rolling release latest
@@ -86,7 +86,7 @@ jobs:
           gh release create latest webui-src/dist/* \
             --prerelease \
             --target "$GITHUB_SHA" \
-            --title "zator deploy (rolling latest)" \
+            --title "latest" \
             --notes "Развёртываемые архивы zator. Сборка: $TAG, commit $GITHUB_SHA. Rolling-релиз, ассеты обновляются при каждой ручной сборке."
 
       - name: Create numbered release
@@ -101,5 +101,5 @@ jobs:
           fi
           gh release create "$TAG" webui-src/dist/* \
             --target "$GITHUB_SHA" \
-            --title "zator deploy $TAG" \
+            --title "$TAG" \
             --notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG."

@@ -62,13 +62,13 @@ const now = new Date()
 const stamp = `${now.getUTCFullYear()}${pad2(now.getUTCMonth() + 1)}${pad2(now.getUTCDate())}-${pad2(now.getUTCHours())}${pad2(now.getUTCMinutes())}`
 
 function stampToDateShort(value) {
-  const m = value.match(/^deploy-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/)
+  const m = value.match(/^(?:deploy|stable)-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/)
   if (!m) return null
   return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`
 }
 
-const version = args.get('version') || `deploy-${stamp}`
-// при фиксированном --version=deploy-... даты берутся из номера — сборка детерминирована
+const version = args.get('version') || `stable-${stamp}`
+// при фиксированном --version=stable-... даты берутся из номера — сборка детерминирована
 const dateShort = stampToDateShort(version)
   || `${now.getUTCFullYear()}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())} ${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}`
 const variantArg = args.get('variant') || 'all'

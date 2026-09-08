@@ -95,7 +95,7 @@ deploy_asset_field() {
 }
 
 # Забирает latest.json релиза <tag> и заполняет DEPLOY_META_* по сборке и
-# DEPLOY_META_<VARIANT>_{SIZE,SHA,UNPACKED} по ассетам.
+# DEPLOY_META_ASSET_<VARIANT>_{SIZE,SHA,UNPACKED} по ассетам.
 deploy_fetch_release_meta() {
   local tag="$1"
   local tmp="/tmp/z2r_deploy_meta_$$.json"
@@ -112,9 +112,9 @@ deploy_fetch_release_meta() {
   DEPLOY_META_WEBUI_DATE="$(deploy_json_str "$tmp" webuiDate)"
   local v
   for v in core webui full; do
-    eval "DEPLOY_META_${v^^}_SIZE=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" size)\""
-    eval "DEPLOY_META_${v^^}_SHA=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" sha256)\""
-    eval "DEPLOY_META_${v^^}_UNPACKED=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" unpackedSize)\""
+    eval "DEPLOY_META_ASSET_${v^^}_SIZE=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" size)\""
+    eval "DEPLOY_META_ASSET_${v^^}_SHA=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" sha256)\""
+    eval "DEPLOY_META_ASSET_${v^^}_UNPACKED=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" unpackedSize)\""
   done
   rm -f "$tmp"
   [ -n "$DEPLOY_META_RELEASE" ]
@@ -216,7 +216,7 @@ deploy_download_archive() {
     echo -e "${red}Не удалось скачать архив zator-${variant}.tar.gz (релиз $tag).${plain}"
     return 1
   fi
-  eval "expected=\"\${DEPLOY_META_${variant^^}_SHA:-}\""
+  eval "expected=\"\${DEPLOY_META_ASSET_${variant^^}_SHA:-}\""
   if [ -n "$expected" ] && command -v sha256sum >/dev/null 2>&1; then
     if [ "$(file_sha256 "$dest")" != "$expected" ]; then
       echo -e "${red}Контрольная сумма архива не совпала.${plain}"
@@ -507,7 +507,7 @@ deploy_from_tar() {
   deploy_gzip_ok "$archive" || return 1
 
   if [ -n "$url" ]; then
-    eval "unpacked_bytes=\"\${DEPLOY_META_${variant^^}_UNPACKED:-}\""
+    eval "unpacked_bytes=\"\${DEPLOY_META_ASSET_${variant^^}_UNPACKED:-}\""
   fi
   if [ -z "$unpacked_bytes" ]; then
     unpacked_bytes="$(gzip -l "$archive" 2>/dev/null | awk 'NR==2 {print $2}')"
