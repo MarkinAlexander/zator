@@ -151,7 +151,7 @@ bash -n "$REPO_DIR/z2r.sh" || fail "bash -n failed for z2r.sh"
 if grep -qiE 'web-ssh|webssh|ttyd|web-терминал' "$REPO_DIR/z2r.sh"; then
   fail "в z2r.sh остались легаси-термины (web-ssh/ttyd/web-терминал)"
 fi
-grep -qF 'Web-панель управления (установка/обновление, ~3МБ места)' "$REPO_DIR/z2r.sh" \
+grep -qF 'Web-панель управления (установка/переустановка; обновление - п.5)' "$REPO_DIR/z2r.sh" \
   || fail "пункт меню 14 не говорит про Web-панель"
 grep -qF 'Установить Web-панель управления (~3МБ места)? 1 - Да, Enter - нет' "$REPO_DIR/z2r.sh" \
   || fail "промпт установки не говорит про Web-панель"
