@@ -188,8 +188,9 @@ profile_max_snapshot() {
   done
 }
 
-STANDARD_IDS="$(config_auto_pair_ids "$CFG" standard | paste -sd ' ' -)"
-AUTO_IDS="$(config_auto_pair_ids "$CFG" | paste -sd ' ' -)"
+# join через tr: paste есть не во всех busybox-сборках
+STANDARD_IDS="$(config_auto_pair_ids "$CFG" standard | tr '\n' ' ' | sed 's/ $//')"
+AUTO_IDS="$(config_auto_pair_ids "$CFG" | tr '\n' ' ' | sed 's/ $//')"
 [ "$STANDARD_IDS" = "1 2 3 4 8 3S 9" ] || fail "standard TCP/HTTP profile markers changed"
 [ "$AUTO_IDS" = "3 4 9" ] || fail "automatic profile set must be exactly 3, 4, 9"
 for marker in Z2R_AUTO_STANDARD_1 Z2R_AUTO_9; do
