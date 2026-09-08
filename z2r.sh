@@ -1309,12 +1309,13 @@ zapret2_flavor_prompt() {
   local cur def num file
   [ "${Z2R_OFFLINE:-0}" = "1" ] && return 0
   file="$(zapret2_flavor_file)"
-  cur="$(zapret2_flavor_load)"
-  def=1
-  [ "$cur" = fork ] && def=2
-  # первый запуск (нет сохранённого выбора): на Keenetic по умолчанию форк
-  if [ ! -s "$file" ] && [ "${hardware:-}" = "keenetic" ]; then
-    def=2
+  # форк по умолчанию на всех платформах (официальный код + патч reasm,
+  # больше тестеров); явный сохранённый выбор official уважается.
+  # Важно: пустой преф load возвращает как official, поэтому наличие
+  # файла выбора проверяем отдельно.
+  def=2
+  if [ -s "$file" ] && [ "$(zapret2_flavor_load)" = official ]; then
+    def=1
   fi
   echo -e "${cyan}Сборка zapret2:${plain}"
   echo -e "  1) официальная bol-van"
@@ -1552,6 +1553,15 @@ install_zapret_reboot() {
   echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Открываю меню управления. Если меню закрылось или что-то пошло не так — просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
  else
   echo -e "${yellow}zapret2 полностью установлен, но не обнаружен после запуска в исполняемых задачах через pidof\nСаппорт: tg: zee4r${plain}"
+ fi
+ # После переустановки предлагаем восстановление из бэкапа, созданного
+ # перед операцией (как в п.5 обновления): конфиг только что развёрнут
+ # заново, умный перенос/списки возвращают пользовательские настройки.
+ # В ветке неудачи это ещё и путь отката.
+ if type backup_update_offer_restore >/dev/null 2>&1; then
+   backup_update_offer_restore || true
+ fi
+ if ! pidof nfqws2 >/dev/null; then
   pause_enter
  fi
 }

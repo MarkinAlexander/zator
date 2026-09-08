@@ -143,7 +143,14 @@ ZATOR_ROOT="$ZATOR_ROOT" hardware="$hardware" bash -c '
   . "'"$TMP"'/lib.sh"
   zapret2_flavor_prompt </dev/null >/dev/null 2>&1'
 r="$(ZATOR_ROOT="$ZATOR_ROOT" bash -c '. "'"$TMP"'/lib.sh"; zapret2_flavor_load')"
-[ "$r" = official ] && ok "prompt: не-Keenetic без выбора -> official" || bad "prompt: не-Keenetic -> $r"
+[ "$r" = fork ] && ok "prompt: не-Keenetic без выбора -> fork (глобальный дефолт)" || bad "prompt: не-Keenetic -> $r"
+
+ZATOR_ROOT="$ZATOR_ROOT" bash -c '. "'"$TMP"'/lib.sh"; zapret2_flavor_save official >/dev/null'
+ZATOR_ROOT="$ZATOR_ROOT" hardware="" bash -c '
+  . "'"$TMP"'/lib.sh"
+  zapret2_flavor_prompt </dev/null >/dev/null 2>&1'
+r="$(ZATOR_ROOT="$ZATOR_ROOT" bash -c '. "'"$TMP"'/lib.sh"; zapret2_flavor_load')"
+[ "$r" = official ] && ok "prompt: сохранённый official держится при EOF" || bad "prompt: official потерян -> $r"
 
 ZATOR_ROOT="$ZATOR_ROOT" bash -c '. "'"$TMP"'/lib.sh"; zapret2_flavor_save fork >/dev/null'
 ZATOR_ROOT="$ZATOR_ROOT" hardware="" bash -c '
@@ -151,6 +158,14 @@ ZATOR_ROOT="$ZATOR_ROOT" hardware="" bash -c '
   zapret2_flavor_prompt </dev/null >/dev/null 2>&1'
 r="$(ZATOR_ROOT="$ZATOR_ROOT" bash -c '. "'"$TMP"'/lib.sh"; zapret2_flavor_load')"
 [ "$r" = fork ] && ok "prompt: сохранённый fork держится при EOF" || bad "prompt: fork потерян -> $r"
+
+# выбор цифрой: "1" на пустом префе сохраняет official
+rm -f "$ZATOR_ROOT/extra_strats/cache/zapret2_flavor"
+ZATOR_ROOT="$ZATOR_ROOT" hardware="" bash -c '
+  . "'"$TMP"'/lib.sh"
+  printf "1\n" | zapret2_flavor_prompt >/dev/null 2>&1'
+r="$(ZATOR_ROOT="$ZATOR_ROOT" bash -c '. "'"$TMP"'/lib.sh"; zapret2_flavor_load')"
+[ "$r" = official ] && ok "prompt: явный выбор 1 -> official" || bad "prompt: выбор 1 -> $r"
 
 Z2R_OFFLINE=1 ZATOR_ROOT="$ZATOR_ROOT" bash -c '
   . "'"$TMP"'/lib.sh"
