@@ -559,6 +559,7 @@ button.primary.is-busy::after,
   color: var(--muted);
   line-height: 1.2;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .profile-card {
