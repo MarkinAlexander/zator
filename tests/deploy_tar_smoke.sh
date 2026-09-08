@@ -148,6 +148,14 @@ exp_webui_sha="$(grep '"webuiSha":' "$SMOKE_JSON_SRC" | head -n1 | sed 's/.*: *"
 [ "$DEPLOY_META_ASSET_WEBUI_SHA" != "$exp_webui_sha" ] || fail "тест не различает контентный и ассетный sha"
 ok "deploy_fetch_release_meta: контентный и ассетный sha разделены"
 
+# регрессия set -e: deploy_menu_header с отсутствующими version.env/latest.env
+# не должен ронять вызывающий скрипт (завершался кодом 1 последним AND-списком)
+rm -rf "$WORK/empty-zator"
+mkdir -p "$WORK/empty-zator"
+( cd "$REPO_DIR" && ZATOR_ROOT="$WORK/empty-zator" bash -c 'set -e; source lib/deploy.sh >/dev/null 2>&1; deploy_menu_header; echo SURVIVED' ) | grep -q SURVIVED \
+  || fail "deploy_menu_header роняет set -e при пустом окружении"
+ok "deploy_menu_header безопасен под set -e"
+
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"
