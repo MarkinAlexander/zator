@@ -37,6 +37,7 @@ find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{
 [ -f "$LIB_DIR/actions.sh" ] && . "$LIB_DIR/actions.sh"
 [ -f "$LIB_DIR/provider.sh" ] && . "$LIB_DIR/provider.sh"
 [ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
+[ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
 
 telemetry_notify() {
   type send_stats >/dev/null 2>&1 && send_stats || true
@@ -82,6 +83,7 @@ parse_params() {
   PARAM_VALUE=""
   PARAM_LIST=""
   PARAM_DOMAIN=""
+  PARAM_NEW_DOMAIN=""
   PARAM_NAME=""
   PARAM_CITY=""
   PARAM_PROTO=""
@@ -100,6 +102,7 @@ parse_params() {
       value) PARAM_VALUE="$value" ;;
       list) PARAM_LIST="$value" ;;
       domain) PARAM_DOMAIN="$value" ;;
+      new_domain) PARAM_NEW_DOMAIN="$value" ;;
       name) PARAM_NAME="$value" ;;
       city) PARAM_CITY="$value" ;;
       proto) PARAM_PROTO="$value" ;;
@@ -665,8 +668,39 @@ api_state() {
   else
     dns_json="{\"state\":\"$MENU_DNS_DESINC\",\"enabled\":$([ "$MENU_DNS_DESINC" = "Включен" ] && echo true || echo false)}"
   fi
+  local version_json
+  if type deploy_version_field >/dev/null 2>&1; then
+    local v_zator_ver v_zator_date v_webui_ver v_webui_date v_tracking
+    local v_lz_date v_lw_date v_update=false
+    v_zator_ver="$(deploy_version_field ZATOR_VERSION)"
+    v_zator_date="$(deploy_version_field ZATOR_DATE)"
+    v_webui_ver="$(deploy_version_field WEBUI_VERSION)"
+    v_webui_date="$(deploy_version_field WEBUI_DATE)"
+    v_tracking="$(deploy_version_field TRACKING)"
+    v_lz_date="$(deploy_latest_field LATEST_ZATOR_DATE)"
+    v_lw_date="$(deploy_latest_field LATEST_WEBUI_DATE)"
+    local v_zs v_ws v_lz v_lw
+    v_zs="$(deploy_version_field ZATOR_SHA)"
+    v_ws="$(deploy_version_field WEBUI_SHA)"
+    v_lz="$(deploy_latest_field LATEST_ZATOR_SHA)"
+    v_lw="$(deploy_latest_field LATEST_WEBUI_SHA)"
+    if { [ -n "$v_lz" ] && [ -n "$v_zs" ] && [ "$v_zs" != "$v_lz" ]; } \
+      || { [ -n "$v_lw" ] && [ -n "$v_ws" ] && [ "$v_ws" != "$v_lw" ]; }; then
+      v_update=true
+    fi
+    _json_esc "$v_zator_ver"; local j_zver="$REPLY"
+    _json_esc "$v_zator_date"; local j_zdate="$REPLY"
+    _json_esc "$v_webui_ver"; local j_wver="$REPLY"
+    _json_esc "$v_webui_date"; local j_wdate="$REPLY"
+    _json_esc "$v_tracking"; local j_track="$REPLY"
+    _json_esc "$v_lz_date"; local j_lzdate="$REPLY"
+    _json_esc "$v_lw_date"; local j_lwdate="$REPLY"
+    version_json="{\"zator_version\":\"$j_zver\",\"zator_date\":\"$j_zdate\",\"webui_version\":\"$j_wver\",\"webui_date\":\"$j_wdate\",\"tracking\":\"$j_track\",\"update_available\":$v_update,\"latest_zator_date\":\"$j_lzdate\",\"latest_webui_date\":\"$j_lwdate\"}"
+  else
+    version_json='{"zator_version":"unknown","zator_date":"","webui_version":"unknown","webui_date":"","tracking":"latest","update_available":false,"latest_zator_date":"","latest_webui_date":""}'
+  fi
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls]},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls]},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -1497,6 +1531,10 @@ api_domains_list() {
   [ -n "$file" ] || send_error "500 Internal Server Error" "Не определён путь списка"
 
   local items="" line first=1 strat max_strat
+  # Самолечение: домены из locked.tsv, пропавшие из TCP_Custom.txt (старые
+  # обновления затирали список), возвращаются перед чтением — иначе веб-панель
+  # и CLI видят пустой список при живых локах.
+  [ "$PARAM_LIST" = "custom_rkn" ] && custom_rkn_restore_from_locks >/dev/null
   domain_list_prepare "$file"
   if [ "$PARAM_LIST" = "custom_rkn" ]; then
     max_strat="$(orch_max_strategy_for_profile 3)"
@@ -1589,6 +1627,36 @@ api_domains_action() {
         domain_list_remove "$file" "$domain"
       fi
       send_json "200 OK" "{\"ok\":true}"
+      ;;
+    rename)
+      domain="${PARAM_DOMAIN:-}"
+      [ -n "$domain" ] || send_error "400 Bad Request" "Не указан домен"
+      if [ "$kind" = "domain" ]; then
+        normalized="$(z2r_normalize_domain "${PARAM_NEW_DOMAIN:-}")" || \
+          send_error "400 Bad Request" "Некорректный домен: ${PARAM_NEW_DOMAIN:-}"
+      else
+        # Подстрока: как при add — только обрезка пробелов, без нормализации.
+        normalized="${PARAM_NEW_DOMAIN:-}"
+        normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+        normalized="${normalized%"${normalized##*[![:space:]]}"}"
+        [ -n "$normalized" ] || send_error "400 Bad Request" "Пустая подстрока"
+      fi
+      # Совпадение с самим собой — no-op, ошибки не будет.
+      if [ "$normalized" = "$domain" ]; then
+        send_json "200 OK" "{\"ok\":true,\"domain\":\"$(json_escape "$normalized")\"}"
+        exit 0
+      fi
+      grep -Fxq -- "$normalized" "$file" 2>/dev/null && \
+        send_error "409 Conflict" "Запись ${normalized} уже есть в списке"
+      local rename_rc=0
+      if [ "$PARAM_LIST" = "custom_rkn" ]; then
+        custom_rkn_rename_domain "$domain" "$normalized" || rename_rc=$?
+      else
+        domain_list_rename "$file" "$domain" "$normalized" || rename_rc=$?
+      fi
+      [ "$rename_rc" = "2" ] && send_error "400 Bad Request" "Записи нет в списке"
+      [ "$rename_rc" = "0" ] || send_error "500 Internal Server Error" "Не удалось переименовать запись"
+      send_json "200 OK" "{\"ok\":true,\"domain\":\"$(json_escape "$normalized")\"}"
       ;;
     import)
       # PARAM_DOMAIN — многострочный текст (после URL-decode \n сохранены).

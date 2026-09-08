@@ -459,7 +459,10 @@ config_mode_text() {
       fi
       ;;
     reasm_disable)
-      if sed -n '/^NFQWS2_OPT="/,/^"$/p' "$cfg" | grep -q '^[[:space:]]*--reasm-disable'; then
+      # через переменную: sed | grep -q под pipefail ловит SIGPIPE на медленном железе
+      local reasm_block
+      reasm_block="$(sed -n '/^NFQWS2_OPT="/,/^"$/p' "$cfg")"
+      if printf '%s\n' "$reasm_block" | grep -q '^[[:space:]]*--reasm-disable'; then
         echo "включено"
       else
         echo "выключено"

@@ -96,6 +96,8 @@ Normal flow:
 - `lib/actions.sh`: config reset, backup, firewall mode switch, UDP toggles, TLS blob switching, and other menu actions.
 - `lib/config.sh`: shared shell helpers for reading/editing `/opt/zapret2/config`, mode labels, profile strategy counts, TLS blob mode, and Keenetic WAN interface detection.
 - `lib/orchestra_state.sh`: shared shell helpers for reading/writing orchestra lock TSV files and checking `nfqws2`.
+- `lib/deploy.sh`: tar-развёртывание релизов (`deploy_from_tar`, проверки свободного места, режимы staging A/B/C, меню п.5 «Обновление zator и zapret2», выборочный сброс пользовательских файлов к эталону, целостность). Версии живут в `$ZATOR_ROOT/extra_strats/cache/deploy/version.env` (ZATOR_*/WEBUI_*/TRACKING) и `latest.env`; манифесты установленного — `manifest.<variant>.tsv`. Не обязательный модуль: без него п.5 деградирует до прежнего поведения. Лаунчер z2r вызывает его standalone (`bash deploy.sh from-tar <файл|url> [variant] [tag]`) — при правках держать CLI-контракт и `deploy_dest_for` (нормализация `/opt/...` из манифеста) в актуальном виде.
+- `.github/workflows/deploy-tar.yml`: ручная сборка релизных архивов (`zator-core/webui/full.tar.gz` + `.sha256` + манифесты + `latest.json`; rolling-тег `latest` и неизменяемые номерные). Сборщик — `webui-src/scripts/pack-zator-tar.mjs` (`npm run pack`); карта файлов/классы защиты (`auto`/`keep-if-exists`/`payload`) в манифесте — держать синхронно с `get_repo` и `webui_install_files`.
 - `lists/`: shipped hostlists and ipsets.
 - `fake/`: fake payload binaries, including TLS, QUIC, Discord UDP, SYN, and WireGuard initial payload variants.
 - `fake_files.tar.gz`: archive deployed by `z2r.sh` for fake payload installation.
@@ -259,6 +261,35 @@ bash tests/profile_lock_smoke.sh
 
 ```text
 profile_lock smoke ok
+```
+
+```bash
+bash tests/deploy_tar_smoke.sh
+```
+
+Тест tar-развёртывания (`lib/deploy.sh` + сборщик `pack-zator-tar.mjs`), тоже
+только во временной директории в `/tmp` (`ZATOR_ROOT`/`Z2R_SCRIPT_DEST`
+переопределяются, `deploy_dest_for` перегоняет канонические `/opt/...` из
+манифеста в тестовые пути; SMOKE_DIST позволяет подать готовые архивы без
+node — так тест гоняется на самом роутере):
+
+- сборщик: три варианта одним прогоном, latest.json со схемой и размерами,
+  sha256sum -c, version.env/manifest.tsv внутри архива, LF, symlink;
+- deploy_from_tar: режим A (staging в /tmp) — файлы, `_root/z2r.sh`,
+  `_payload`, symlink cgi-bin;
+- защиты keep-if-exists (netrogat.txt, TCP_Custom.txt не перезаписываются),
+  runtime-файлы (autohostlist, cache) не тронуты;
+- слияние version.env по компонентам при webui-only деплое (ZATOR_* не
+  затираются), манифесты по вариантам;
+- выбор режима A/B/C по моку df; режим C — перестановка каталогов с
+  переносом runtime;
+- deploy_integrity_check (замечает изменения), deploy_reset_user_files
+  (all и выборочный сброс через stdin).
+
+Успешный результат:
+
+```text
+deploy tar smoke ok
 ```
 
 ```bash

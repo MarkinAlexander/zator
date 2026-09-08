@@ -1,8 +1,9 @@
 import { reactive, ref } from 'vue'
 import { fetchScopes, fetchStatus } from '../api/endpoints'
-import type { CheckPayload, ProfileInfo, ScopesPayload, StatusPayload } from '../api/types'
+import type { CheckPayload, ProfileInfo, ScopesPayload, StatusPayload, VersionInfo } from '../api/types'
 
 export const status = ref<StatusPayload | null>(null)
+export const versionInfo = ref<VersionInfo | null>(null)
 export const locks = ref<ProfileInfo[]>([])
 export const scopes = ref<ScopesPayload>({ enabled: false, warning: '', scopes: ['default'] })
 export const scope = ref('default')
