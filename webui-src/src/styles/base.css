@@ -707,6 +707,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .ok { color: var(--success); }
 .warn { color: var(--warning); }
 .bad { color: var(--danger); }
+.info { color: var(--accent); }
 
 .settings-form {
   display: flex;
