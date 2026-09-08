@@ -68,12 +68,14 @@ deploy_releases_base() {
 }
 
 deploy_env_get() {
+  # всегда rc=0, отсутствие файла = пустое значение: присваивания без защиты
+  # не должны ронять вызывающий скрипт под set -e
   local file="$1" key="$2" line
-  [ -f "$file" ] || return 1
-  line="$(grep "^${key}=" "$file" | head -n1)"
-  line="${line#*=}"
-  line="${line#\"}"
+  line="$(grep "^${key}=" "$file" 2>/dev/null | head -n 1)"
+  line=${line#*=}
+  line=${line#\"}
   printf '%s' "${line%\"}"
+  return 0
 }
 
 deploy_version_field() { deploy_env_get "$DEPLOY_VERSION_FILE" "$1"; }
@@ -705,6 +707,7 @@ deploy_menu_header() {
     MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
 "
   fi
+  return 0
 }
 
 deploy_update_menu() {

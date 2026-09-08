@@ -1921,7 +1921,16 @@ webui_submenu() {
     read -re -p "Ваш выбор: " webui_answer
     case "$webui_answer" in
       "1")
-        webui_install || echo -e "${red}Установка/запуск Web UI не удался.${plain}"
+        # Обновление существующей панели — из релизного архива webui (сверка
+        # sha, рестарт); установка с нуля — webui_install (зависимости и
+        # службу archive не ставит).
+        if [ -d "$WEBUI_WWW" ] && type deploy_from_tar >/dev/null 2>&1; then
+          deploy_from_tar "$(deploy_releases_base)/latest/zator-webui.tar.gz" webui latest \
+            || webui_install \
+            || echo -e "${red}Обновление Web UI не удалось.${plain}"
+        else
+          webui_install || echo -e "${red}Установка/запуск Web UI не удался.${plain}"
+        fi
         pause_enter
         ;;
       "2")
