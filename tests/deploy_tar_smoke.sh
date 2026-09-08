@@ -136,6 +136,9 @@ printf 'pid\n' > "$ZATOR_ROOT/webui/run/webui.pid"
 
 source "$REPO_DIR/lib/deploy.sh"
 
+# изоляция zapret2-корня для deploy_apply_config_default (эталон config.default)
+export ZAPRET2_ROOT="$WORK/zapret2"
+
 # регрессия коллизии имён: контентный webuiSha из latest.json не должен
 # затираться sha256 ассета (цикл по вариантам в deploy_fetch_release_meta)
 SMOKE_JSON_SRC="$DIST/latest.json"
@@ -163,6 +166,11 @@ deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_t
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"
 [ -f "$ZATOR_ROOT/.deploy-payload/config.default" ] || fail "payload config.default не разложен"
 [ -f "$ZATOR_ROOT/.deploy-payload/Entware/keenetic-policy.sh" ] || fail "payload keenetic-policy.sh не разложен"
+# payload config.default применяется к эталону в корне zapret2
+# (живой config в standalone-контексте смоука отсутствует)
+[ -f "$ZAPRET2_ROOT/config.default" ] || fail "payload config.default не скопирован в эталон zapret2"
+cmp -s "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.default" \
+  || fail "эталон config.default отличается от payload"
 [ -x "$ZATOR_ROOT/webui/run-webui.sh" ] || fail "run-webui.sh не исполняемый"
 check_symlink "$ZATOR_ROOT/webui/www/cgi-bin" || fail "symlink cgi-bin не создан"
 ok "deploy_from_tar A: файлы, payload, z2r.sh, symlink"
@@ -173,6 +181,23 @@ grep -q 'autohost-runtime' "$ZATOR_ROOT/lists/autohostlist.txt" || fail "autohos
 grep -q 'lock-runtime' "$ZATOR_ROOT/extra_strats/cache/orchestra/locked.tsv" || fail "locked.tsv тронут"
 grep -q 'pid' "$ZATOR_ROOT/webui/run/webui.pid" || fail "webui/run тронут"
 ok "защиты keep-if-exists и runtime"
+
+# --- 4b. payload config.default применяется к живому конфигу ---
+# мокаем окружение меню: живой config есть, функции применителя доступны;
+# проверяем связку stop -> apply -> restart внутри deploy_from_tar
+mkdir -p "$ZAPRET2_ROOT"
+printf 'LIVE-CONFIG\n' > "$ZAPRET2_ROOT/config"
+APPLY_MARK="$WORK/apply.mark" RESTART_MARK="$WORK/restart.mark"
+export APPLY_MARK RESTART_MARK
+config_apply_from_default() { echo applied >> "$APPLY_MARK"; }
+z2r_service_action() { echo "$1" >> "$RESTART_MARK"; }
+backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
+deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (apply) упал"
+[ -s "$APPLY_MARK" ] || fail "config_apply_from_default не вызван при живом config"
+grep -q '^stop$' "$RESTART_MARK" || fail "нет stop перед применением config.default"
+grep -q '^restart$' "$RESTART_MARK" || fail "нет restart после применения config.default"
+ok "payload config.default применяется к живому конфигу (stop -> apply -> restart)"
+unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
 
 # --- 5. обновление webui-вариантом: слияние version.env ---
 

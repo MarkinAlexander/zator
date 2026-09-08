@@ -402,6 +402,7 @@ deploy_apply_staging() {
     fi
   fi
   deploy_post_apply "$staging" "$tracking" "$z2r_updated" "$webui_updated"
+  deploy_apply_config_default || true
 }
 
 # Режим C: наполнение нового дерева из старого. Перенос делается hardlink'ами
@@ -467,10 +468,53 @@ deploy_apply_newdir() {
     ln -sfn ../cgi-bin "$ZATOR_ROOT/webui/www/cgi-bin" 2>/dev/null || true
   fi
   deploy_post_apply "$ZATOR_ROOT" "$tracking" "$z2r_updated" "$webui_updated"
+  deploy_apply_config_default || true
 }
 
 # Основной вход: deploy_from_tar <файл|url> [variant] [tag]
 # Для url: variant обязателен, tag = latest или номер релиза (пишется в TRACKING).
+# Применяет config.default из payload релиза: эталон копируется в
+# $ZAPRET2_ROOT, затем переносится на живой config (локи, client-scope,
+# WAN кинетика) с рестартом zapret2 — пользователь получает новые
+# стратегии из релиза. Пользовательские листы не трогаются.
+# Без живого config (свежая установка) — только эталон, установочный
+# поток z2r.sh соберёт config сам.
+deploy_apply_config_default() {
+  [ -f "$DEPLOY_PAYLOAD_DIR/config.default" ] || return 0
+  local root="${ZAPRET2_ROOT:-/opt/zapret2}"
+  mkdir -p "$root"
+  cp -f "$DEPLOY_PAYLOAD_DIR/config.default" "$root/config.default" || return 1
+  if [ ! -f "$root/config" ]; then
+    echo -e "${yellow}config.default обновлён (эталон); живой config появится при установке zapret2.${plain}"
+    return 0
+  fi
+  if ! type config_apply_from_default >/dev/null 2>&1; then
+    # standalone-запуск лаунчера: применит меню z2r (п.5 -> п.7)
+    echo -e "${yellow}config.default обновлён; примените его к живому конфигу: меню п.5 -> п.7.${plain}"
+    return 0
+  fi
+  if type backup_helper_ask_and_create >/dev/null 2>&1; then
+    backup_helper_ask_and_create
+  fi
+  if type z2r_service_action >/dev/null 2>&1; then
+    z2r_service_action stop >/dev/null 2>&1 || true
+  fi
+  if ! config_apply_from_default; then
+    echo -e "${red}Не удалось применить config.default к живому конфигу.${plain}"
+    if type z2r_service_action >/dev/null 2>&1; then
+      z2r_service_action start >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+  if [ "${BACKUP_HELPER_CREATED:-0}" = 1 ] && type backup_update_offer_restore >/dev/null 2>&1; then
+    backup_update_offer_restore || true
+  elif type z2r_service_action >/dev/null 2>&1; then
+    z2r_service_action restart >/dev/null 2>&1 || true
+    echo -e "${green}Живой config обновлён из config.default, zapret2 перезапущен.${plain}"
+  fi
+  return 0
+}
+
 deploy_from_tar() {
   local source="$1" variant="${2:-}" tag="${3:-latest}" tracking="${3:-}"
   local tmpbase="/tmp/z2r_deploy_$$"
@@ -732,7 +776,7 @@ deploy_update_menu() {
     echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}"
     echo ""
     submenu_item 1 "Проверить обновления (даты zator/webui: локально vs сервер)"
-    submenu_item 2 "Обновить zator (код, листы, lua; панель не трогается)"
+    submenu_item 2 "Обновить zator (код, конфиг, листы, lua; панель не трогается)"
     submenu_item 3 "Обновить только Web-панель"
     submenu_item 4 "Выбрать номерной релиз (список с датами; установка закрепляет версию)"
     submenu_item 5 "Установить из локального tar.gz (по умолчанию ищется в /tmp)"
