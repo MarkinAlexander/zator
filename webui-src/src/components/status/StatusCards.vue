@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { RouteLocationRaw } from 'vue-router'
 import StatCard from '../ui/StatCard.vue'
-import { status } from '../../stores/status'
+import { status, versionInfo } from '../../stores/status'
 import { fallbackSettings } from '../../stores/settings'
 
 interface CardDef {
@@ -35,7 +35,14 @@ const cards = computed<CardDef[]>(() => {
   const fallbackState = fallbackSettings.value?.state ?? '—'
   const dnsProfile = (data.profiles || []).find((profile) => profile.is_dns_desync)
 
+  const ver = versionInfo.value
+  const verValue = ver?.zator_date ? ver.zator_date : (ver?.zator_version || '—')
+  const verSub = ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined
+  const verClass = ver?.update_available ? 'bad' : (ver?.zator_date ? 'ok' : '')
+  const verLabel = ver?.update_available ? 'Доступно обновление' : 'Версия zator'
+
   return [
+    { label: verLabel, value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5' },
     { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad' },
     { label: 'Локи стратегий', value: data.strategy_locks_status ?? '—', to: '/strategies' },
     { label: 'Client scopes', value: scopeMode, stateClass: scopeMode === 'mark' ? 'ok' : '', subText: scopeSub, to: scopeTarget },

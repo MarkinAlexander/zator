@@ -2720,6 +2720,16 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self._send_json({
                     "status": self.state.build_status(requested_scope),
+                    "version": {
+                        "zator_version": "deploy-20260901-1200",
+                        "zator_date": "2026-09-01 12:00",
+                        "webui_version": "deploy-20260901-1200",
+                        "webui_date": "2026-09-01 12:00",
+                        "tracking": "latest",
+                        "update_available": False,
+                        "latest_zator_date": "",
+                        "latest_webui_date": "",
+                    },
                     "scopes": self._build_scopes(),
                     "tls_blob": self.state.build_tls_blob_settings(),
                     "wg_blob": self.state.build_wg_blob_settings(),

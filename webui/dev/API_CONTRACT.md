@@ -125,6 +125,7 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
 ```jsonc
 {
   "status":   { /* payload status.cgi целиком */ },
+  "version":  { /* см. ниже */ },
   "scopes":   { /* payload scopes.cgi целиком (client_scopes_json) */ },
   "tls_blob": { /* settings.cgi без setting= */ },
   "wg_blob":  { /* settings.cgi?setting=wg_blob */ },
@@ -140,6 +141,25 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
   "ports":    { /* settings.cgi?setting=ports */ },
   "provider": { /* settings.cgi?setting=provider */ },
   "backups":  { /* GET backups.cgi (список) */ }
+}
+```
+
+Секция `version` — установленная версия zator/Web-панели (из
+`/opt/zator/extra_strats/cache/deploy/version.env`, пишется tar-развёртыванием)
+и флаг наличия обновления (сравнение sha с `latest.env`, который обновляет
+лаунчер `z2r` или п.5 меню при проверке). Без `lib/deploy.sh` на устройстве
+секция приходит с `"zator_version":"unknown"` и `"update_available":false`:
+
+```jsonc
+"version": {
+  "zator_version": "deploy-20260901-1200",
+  "zator_date": "2026-09-01 12:00",
+  "webui_version": "deploy-20260901-1200",
+  "webui_date": "2026-09-01 12:00",
+  "tracking": "latest",          // latest | <тег релиза> — пин автообновления лаунчера
+  "update_available": false,
+  "latest_zator_date": "",       // даты доступного обновления (пусто — проверки не было)
+  "latest_webui_date": ""
 }
 ```
 
