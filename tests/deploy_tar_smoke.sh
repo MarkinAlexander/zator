@@ -136,6 +136,18 @@ printf 'pid\n' > "$ZATOR_ROOT/webui/run/webui.pid"
 
 source "$REPO_DIR/lib/deploy.sh"
 
+# регрессия коллизии имён: контентный webuiSha из latest.json не должен
+# затираться sha256 ассета (цикл по вариантам в deploy_fetch_release_meta)
+SMOKE_JSON_SRC="$DIST/latest.json"
+z2r_fetch_url_to_file() { cp "$SMOKE_JSON_SRC" "$1"; }
+deploy_fetch_release_meta latest
+exp_webui_sha="$(grep '"webuiSha":' "$SMOKE_JSON_SRC" | head -n1 | sed 's/.*: *"//; s/".*//')"
+[ -n "$exp_webui_sha" ] || fail "latest.json без webuiSha"
+[ "$DEPLOY_META_WEBUI_SHA" = "$exp_webui_sha" ] || fail "DEPLOY_META_WEBUI_SHA не контентный webuiSha (коллизия с ассетом)"
+[ -n "$DEPLOY_META_ASSET_WEBUI_SHA" ] || fail "DEPLOY_META_ASSET_WEBUI_SHA пуст"
+[ "$DEPLOY_META_ASSET_WEBUI_SHA" != "$exp_webui_sha" ] || fail "тест не различает контентный и ассетный sha"
+ok "deploy_fetch_release_meta: контентный и ассетный sha разделены"
+
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"
