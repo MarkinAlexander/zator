@@ -2028,7 +2028,7 @@ ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
-zator от: ${plain}${MENU_ZATOR_DATE}${yellow}, Web-панель от: ${plain}${MENU_WEBUI_DATE}${yellow}
+zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
 ${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
 ${Fyellow}0.${yellow} Выход

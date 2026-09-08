@@ -149,12 +149,14 @@ exp_webui_sha="$(grep '"webuiSha":' "$SMOKE_JSON_SRC" | head -n1 | sed 's/.*: *"
 ok "deploy_fetch_release_meta: контентный и ассетный sha разделены"
 
 # регрессия set -e: deploy_menu_header с отсутствующими version.env/latest.env
-# не должен ронять вызывающий скрипт (завершался кодом 1 последним AND-списком)
+# не должен ронять вызывающий скрипт; без установленной панели шапка не должна
+# упоминать Web-панель (поля WEBUI_* есть даже в core-сборке)
 rm -rf "$WORK/empty-zator"
 mkdir -p "$WORK/empty-zator"
-( cd "$REPO_DIR" && ZATOR_ROOT="$WORK/empty-zator" bash -c 'set -e; source lib/deploy.sh >/dev/null 2>&1; deploy_menu_header; echo SURVIVED' ) | grep -q SURVIVED \
-  || fail "deploy_menu_header роняет set -e при пустом окружении"
-ok "deploy_menu_header безопасен под set -e"
+( cd "$REPO_DIR" && ZATOR_ROOT="$WORK/empty-zator" bash -c 'set -e; source lib/deploy.sh >/dev/null 2>&1; deploy_menu_header; echo SURVIVED; echo "PART=[$MENU_WEBUI_PART]"' ) > "$WORK/hdr.out" 2>&1
+grep -q SURVIVED "$WORK/hdr.out" || fail "deploy_menu_header роняет set -e при пустом окружении"
+grep -q 'PART=\[\]' "$WORK/hdr.out" || fail "шапка пишет про Web-панель без установленной панели"
+ok "deploy_menu_header безопасен под set -e и молчит про отсутствующую панель"
 
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
