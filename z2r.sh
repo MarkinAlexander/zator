@@ -34,7 +34,16 @@ Bcyan='\033[46m'
 z2r_github_commit_date() {
   local path="$1" timeout="${2:-10}"
   [ "${Z2R_OFFLINE:-0}" != "1" ] || return 0
-  curl -s --max-time "$timeout" "https://api.github.com/repos/AloofLibra/zator/commits?path=${path}&per_page=1" \
+  # форк-aware: репозиторий и ветка из Z2R_PROJECT_RAW_BASE (прокидывается лаунчером),
+  # иначе репозиторий автора и его ветка по умолчанию
+  local api_repo="AloofLibra/zator" api_sha=""
+  case "${Z2R_PROJECT_RAW_BASE:-}" in
+    https://raw.githubusercontent.com/*/*/*)
+      api_repo="$(printf '%s' "$Z2R_PROJECT_RAW_BASE" | cut -d/ -f4,5)"
+      api_sha="&sha=$(printf '%s' "$Z2R_PROJECT_RAW_BASE" | cut -d/ -f6)"
+      ;;
+  esac
+  curl -s --max-time "$timeout" "https://api.github.com/repos/${api_repo}/commits?path=${path}${api_sha}&per_page=1" \
     | grep '"date"' | head -n1 | cut -d'"' -f4
 }
 
