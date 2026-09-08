@@ -37,13 +37,22 @@ const cards = computed<CardDef[]>(() => {
   const dnsProfile = (data.profiles || []).find((profile) => profile.is_dns_desync)
 
   const ver = versionInfo.value
-  const verValue = ver?.zator_date || ver?.zator_version || '—'
-  let verSub = ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined
-  if (ver?.update_available) verSub = `${verSub ?? ''} · есть обновление`.trim()
-  const verClass = ver?.update_available ? 'bad' : (ver?.zator_date ? 'ok' : '')
+  const verParts: string[] = []
+  if (ver?.zator_date) verParts.push(`zator от ${ver.zator_date}`)
+  if (ver?.webui_date) verParts.push(`Web-панель от ${ver.webui_date}`)
+  const verSub = verParts.length ? verParts.join(' · ') : undefined
+  let verValue = ver?.zator_date || '—'
+  let verClass = ''
+  if (ver?.update_available) {
+    verValue = 'Есть обновление'
+    verClass = 'bad'
+  } else if (ver?.zator_date && ver?.latest_zator_date) {
+    verValue = 'Нет обновлений'
+    verClass = 'ok'
+  }
 
   return [
-    { label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: true },
+    { label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: verClass === '' },
     { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad' },
     { label: 'Локи стратегий', value: data.strategy_locks_status ?? '—', to: '/strategies' },
     { label: 'Client scopes', value: scopeMode, stateClass: scopeMode === 'mark' ? 'ok' : '', subText: scopeSub, to: scopeTarget },
