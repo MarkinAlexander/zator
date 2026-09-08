@@ -190,16 +190,8 @@ deploy_space_mode_select() {
 }
 
 deploy_gzip_ok() {
-  local file="$1" magic
-  magic="$(head -c 2 "$file" 2>/dev/null | od -b 2>/dev/null | tr -s ' \t' ' ' | head -n1)"
-  case "$magic" in
-    *037*213*) ;;
-    *)
-      echo -e "${red}Файл не является gzip-архивом (возможно, страница ошибки).${plain}"
-      return 1
-      ;;
-  esac
-  gzip -t "$file" 2>/dev/null || { echo -e "${red}Архив повреждён (gzip -t).${plain}"; return 1; }
+  # od есть не везде (OpenWrt): gzip -t сам ловит и HTML-страницы, и битые архивы
+  gzip -t "$1" 2>/dev/null || { echo -e "${red}Файл не является gzip-архивом (возможно, страница ошибки).${plain}"; return 1; }
 }
 
 file_sha256() {
