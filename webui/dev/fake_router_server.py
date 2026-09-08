@@ -2721,7 +2721,7 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 self._send_json({
                     "status": self.state.build_status(requested_scope),
                     "version": {
-                        "zapret2_version": "v1.0.5.1+a1bca5a",
+                        "zapret2_version": "v1.0.5.1-reasm-fix",
                         "zator_version": "deploy-20260901-1200",
                         "zator_date": "2026-09-01 12:00",
                         "webui_version": "deploy-20260901-1200",
