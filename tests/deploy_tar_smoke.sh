@@ -345,6 +345,19 @@ printf '# Last modified: 2026-09-05 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
 unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
 ok "лёгкий путь п.7: применение без скачивания и self-heal payload"
 
+# --- 4d. standalone-подсказка лаунчера печатается только при новом эталоне ---
+STANDALONE_OUT="$WORK/standalone.out"
+( cd "$REPO_DIR" && ZATOR_ROOT="$ZATOR_ROOT" ZAPRET2_ROOT="$ZAPRET2_ROOT" bash -c '
+    source lib/deploy.sh >/dev/null 2>&1
+    deploy_apply_config_to_live' ) > "$STANDALONE_OUT" 2>&1
+grep -q 'примените его к живому конфигу' "$STANDALONE_OUT" || fail "новый эталон: standalone-подсказка не напечатана"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+( cd "$REPO_DIR" && ZATOR_ROOT="$ZATOR_ROOT" ZAPRET2_ROOT="$ZAPRET2_ROOT" bash -c '
+    source lib/deploy.sh >/dev/null 2>&1
+    deploy_apply_config_to_live' ) > "$STANDALONE_OUT" 2>&1
+grep -q 'примените его к живому конфигу' "$STANDALONE_OUT" && fail "равные даты: standalone-подсказка напечатана зря"
+ok "standalone-подсказка условна (только при новом эталоне)"
+
 # --- 5. обновление webui-вариантом: слияние version.env ---
 
 # подменяем даты в текущем version.env, чтобы увидеть слияние полей

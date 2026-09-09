@@ -57,9 +57,15 @@ const cards = computed<CardDef[]>(() => {
     verClass = 'info'
   }
 
+  const z2Parts: string[] = []
+  if (ver?.zapret2_version) z2Parts.push(ver.zapret2_version)
+  if (ver?.config_date && ver.config_date !== 'Неизвестно') {
+    z2Parts.push(`config от ${ver.config_date.slice(0, 10)}`)
+  }
+
   return [
     { label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: verClass === '' },
-    { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad', subText: ver?.zapret2_version || undefined },
+    { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad', subText: z2Parts.length ? z2Parts.join('\n') : undefined },
     { label: 'Локи стратегий', value: data.strategy_locks_status ?? '—', to: '/strategies' },
     { label: 'Client scopes', value: scopeMode, stateClass: scopeMode === 'mark' ? 'ok' : '', subText: scopeSub, to: scopeTarget },
     { label: 'Безразборный режим', value: fallbackState, stateClass: fallbackState === 'включен' ? 'ok' : '', to: '/settings/fallback' },
