@@ -558,6 +558,29 @@ platform_summary_text() {
   fi
 }
 
+platform_uptime_text() {
+  local up d h m out=""
+  up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+  [ -n "$up" ] || { printf 'неизвестно'; return 0; }
+  d=$((up / 86400))
+  h=$(((up % 86400) / 3600))
+  m=$(((up % 3600) / 60))
+  [ "$d" -gt 0 ] && out="${d}д "
+  printf '%s%sч %sм' "$out" "$h" "$m"
+}
+
+platform_ram_text() {
+  local total avail
+  total="$(awk '/^MemTotal:/{print int($2/1024); exit}' /proc/meminfo 2>/dev/null)"
+  avail="$(awk '/^MemAvailable:/{print int($2/1024); exit}' /proc/meminfo 2>/dev/null)"
+  [ -n "$avail" ] || avail="$(awk '/^MemFree:/{print int($2/1024); exit}' /proc/meminfo 2>/dev/null)"
+  if [ -n "$total" ] && [ -n "$avail" ]; then
+    printf '%s МБ, свободно %s МБ' "$total" "$avail"
+  else
+    printf 'неизвестно'
+  fi
+}
+
 config_last_modified() {
   local header
   header="$(sed -n 's/^# Last modified:[[:space:]]*//p' "$1" 2>/dev/null | head -n1 | tr -d '\r')"

@@ -2088,8 +2088,12 @@ get_menu() {
     menu_config_snapshot "$_cfg_file"
     if type platform_summary_text >/dev/null 2>&1; then
       MENU_PLATFORM="$(platform_summary_text)"
+      MENU_UPTIME="$(platform_uptime_text)"
+      MENU_RAM="$(platform_ram_text)"
     else
       MENU_PLATFORM="неизвестно"
+      MENU_UPTIME="неизвестно"
+      MENU_RAM="неизвестно"
     fi
     MENU_ZATOR_DATE="неизвестно"
     MENU_WEBUI_DATE="неизвестно"
@@ -2135,6 +2139,8 @@ ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Платформа: ${plain}${MENU_PLATFORM}${yellow}
+Аптайм: ${plain}${MENU_UPTIME}${yellow}
+RAM: ${plain}${MENU_RAM}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
 zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
 ${MENU_ZAPRET2_LINE}${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
