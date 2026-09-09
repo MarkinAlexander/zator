@@ -51,9 +51,28 @@ if ! command -v z2r_fetch_url_to_file >/dev/null 2>&1; then
   }
 fi
 
+if ! command -v ui_is_number_in_range >/dev/null 2>&1; then
+  ui_is_number_in_range() {
+    case "$2" in ''|*[!0-9]*) return 1 ;; esac
+    case "$3" in ''|*[!0-9]*) return 1 ;; esac
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+  }
+fi
+
+deploy_sources_file() {
+  printf '%s/extra_strats/cache/deploy/sources.env' "${ZATOR_ROOT:-/opt/zator}"
+}
+
 deploy_releases_base() {
   if [ -n "${Z2R_RELEASES_BASE:-}" ]; then
     printf '%s' "$Z2R_RELEASES_BASE"
+    return 0
+  fi
+  local mirror
+  mirror="$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)"
+  if [ -n "$mirror" ]; then
+    printf '%s' "$mirror"
     return 0
   fi
   local base="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/zator}"
@@ -127,6 +146,9 @@ deploy_check_latest() {
   DEPLOY_UPDATE_WEBUI=0
   if ! deploy_fetch_release_meta latest; then
     echo -e "${yellow}Не достучались до сервера обновлений.${plain}"
+    if [ -n "$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)" ]; then
+      echo -e "${yellow}Проверьте зеркало или сбросьте источник: п.5 -> п.10.${plain}"
+    fi
     return 1
   fi
   mkdir -p "$DEPLOY_CACHE_DIR"
@@ -198,6 +220,15 @@ deploy_space_mode_select() {
 deploy_gzip_ok() {
   # od есть не везде (OpenWrt): gzip -t сам ловит и HTML-страницы, и битые архивы
   gzip -t "$1" 2>/dev/null || { echo -e "${red}Файл не является gzip-архивом (возможно, страница ошибки).${plain}"; return 1; }
+}
+
+# члены архива не должны выбираться за пределы каталога распаковки
+deploy_tar_paths_ok() {
+  tar -tzf "$1" 2>/dev/null | while IFS= read -r entry; do
+    case "$entry" in
+      /*|../*|*/../*|*/..) exit 1 ;;
+    esac
+  done
 }
 
 file_sha256() {
@@ -380,6 +411,18 @@ deploy_apply_staging() {
   local path dest cls sha size exec z2r_updated=0 webui_updated=0 kept=0 installed=0
   while IFS='|' read -r path dest cls sha size exec; do
     case "$path" in ''|'#'*) continue ;; esac
+    case "$path" in /*|../*|*/../*|*/..)
+      echo -e "${red}Недопустимый путь в манифесте: $path${plain}"
+      return 1
+      ;;
+    esac
+    case "$dest" in
+      /opt/zator/*|/opt/z2r.sh) ;;
+      *)
+        echo -e "${red}Недопустимый dest в манифесте: $dest${plain}"
+        return 1
+        ;;
+    esac
     dest="$(deploy_dest_for "$dest")"
     if [ "$cls" = "keep-if-exists" ] && [ -e "$dest" ]; then
       kept=$((kept + 1))
@@ -475,8 +518,7 @@ deploy_apply_newdir() {
 # Для url: variant обязателен, tag = latest или номер релиза (пишется в TRACKING).
 # Применяет config.default из payload релиза: эталон копируется в
 # $ZAPRET2_ROOT, затем переносится на живой config (локи, client-scope,
-# WAN кинетика) с рестартом zapret2 — пользователь получает новые
-# стратегии из релиза. Пользовательские листы не трогаются.
+# WAN кинетика) с рестартом zapret2. Пользовательские листы не трогаются.
 # Без живого config (свежая установка) — только эталон, установочный
 # поток z2r.sh соберёт config сам.
 deploy_apply_config_default() {
@@ -488,6 +530,13 @@ deploy_apply_config_default() {
     echo -e "${yellow}config.default обновлён (эталон); живой config появится при установке zapret2.${plain}"
     return 0
   fi
+  deploy_apply_config_to_live
+}
+
+# Бэкап-промпт -> stop -> config_apply_from_default -> восстановление/рестарт.
+# Рестарт при созданном бэкапе делает backup_update_offer_restore (сценарий А).
+deploy_apply_config_to_live() {
+  local root="${ZAPRET2_ROOT:-/opt/zapret2}"
   if ! type config_apply_from_default >/dev/null 2>&1; then
     # standalone-запуск лаунчера: применит меню z2r (п.5 -> п.7)
     echo -e "${yellow}config.default обновлён; примените его к живому конфигу: меню п.5 -> п.7.${plain}"
@@ -513,6 +562,39 @@ deploy_apply_config_default() {
     echo -e "${green}Живой config обновлён из config.default, zapret2 перезапущен.${plain}"
   fi
   return 0
+}
+
+# Лёгкий путь п.7: применить уже установленный config.default без сети.
+# После применения эталон копируется в payload — офлайн-источник на будущее.
+deploy_apply_installed_config() {
+  local root="${ZAPRET2_ROOT:-/opt/zapret2}"
+  local src=""
+  if [ -f "$root/config.default" ]; then
+    src="$root/config.default"
+  elif [ -f "$DEPLOY_PAYLOAD_DIR/config.default" ]; then
+    src="$DEPLOY_PAYLOAD_DIR/config.default"
+  else
+    echo -e "${red}Локальный config.default не найден. Обновитесь из релиза (п.2) или локального архива (п.5).${plain}"
+    return 1
+  fi
+  if [ ! -f "$root/config" ]; then
+    echo -e "${yellow}Живой config отсутствует: появится при установке zapret2.${plain}"
+    return 0
+  fi
+  if type config_update_pending >/dev/null 2>&1; then
+    config_update_pending
+    [ "$?" = 1 ] && {
+      echo -e "${green}Живой конфиг уже применён из актуального config.default.${plain}"
+      return 0
+    }
+  fi
+  if [ "$src" != "$root/config.default" ]; then
+    mkdir -p "$root"
+    cp -f "$src" "$root/config.default" || return 1
+  fi
+  deploy_apply_config_to_live || return 1
+  mkdir -p "$DEPLOY_PAYLOAD_DIR"
+  cp -f "$root/config.default" "$DEPLOY_PAYLOAD_DIR/config.default" 2>/dev/null || true
 }
 
 deploy_from_tar() {
@@ -547,6 +629,10 @@ deploy_from_tar() {
   esac
 
   deploy_gzip_ok "$archive" || return 1
+  if ! deploy_tar_paths_ok "$archive"; then
+    echo -e "${red}Архив содержит небезопасные пути (выход за каталог распаковки).${plain}"
+    return 1
+  fi
 
   if [ -n "$url" ]; then
     eval "unpacked_bytes=\"\${DEPLOY_META_ASSET_${variant^^}_UNPACKED:-}\""
@@ -600,6 +686,14 @@ deploy_integrity_check() {
     [ -f "$m" ] || continue
     while IFS='|' read -r path dest cls sha size exec; do
       case "$path" in ''|'#'*) continue ;; esac
+      case "$dest" in
+        /opt/zator/*|/opt/z2r.sh) ;;
+        *)
+          echo -e "${red}недопустимый dest в манифесте: $dest${plain}"
+          missing=$((missing + 1))
+          continue
+          ;;
+      esac
       dest="$(deploy_dest_for "$dest")"
       total=$((total + 1))
       if [ ! -f "$dest" ]; then
@@ -623,6 +717,79 @@ deploy_integrity_check() {
 
 deploy_pick_variant() {
   if [ -e "$ZATOR_ROOT/webui/run-webui.sh" ]; then printf full; else printf core; fi
+}
+
+deploy_parse_zapret2_tarball_name() {
+  local name="${1##*/}"
+  case "$name" in
+    zapret2-v*-openwrt-embedded.tar.gz)
+      name="${name#zapret2-v}"
+      name="${name%-openwrt-embedded.tar.gz}"
+      ;;
+    zapret2-v*.tar.gz)
+      name="${name#zapret2-v}"
+      name="${name%.tar.gz}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  [ -n "$name" ] || return 1
+  printf '%s' "$name"
+}
+
+# Локальный архив zapret2 из /tmp: каноническое имя для ZAPRET2_ARCHIVE_DIR,
+# версия из имени файла, суффикс сборки закрепляет флэвор fork.
+deploy_local_zapret2_pick() {
+  local tar_file ver canon other i=1 found="" pick
+  local scan_dir="${Z2R_TMP_DIR:-/tmp}"
+  local dir="$scan_dir/z2r_local_zapret2"
+  for tar_file in "$scan_dir"/*.tar.gz; do
+    [ -f "$tar_file" ] || continue
+    deploy_parse_zapret2_tarball_name "$tar_file" >/dev/null 2>&1 || continue
+    found="$found
+$i. ${tar_file##*/}"
+    eval "DEPLOY_LOCAL_Z2_$i=\"\$tar_file\""
+    i=$((i + 1))
+  done
+  if [ -z "$found" ]; then
+    echo -e "${yellow}В ${scan_dir} нет архивов zapret2-v<версия>.tar.gz. Положите архив туда и повторите.${plain}"
+    return 1
+  fi
+  echo -e "${yellow}Архивы zapret2:${plain}$found"
+  read -re -p "Номер архива (0 - отмена): " pick
+  if [ "$pick" = "0" ] || ! ui_is_number_in_range "$pick" 1 $((i - 1)); then
+    echo -e "${yellow}Отменено.${plain}"
+    return 0
+  fi
+  eval "tar_file=\"\$DEPLOY_LOCAL_Z2_$pick\""
+  ver="$(deploy_parse_zapret2_tarball_name "$tar_file")" || return 1
+  printf '%s' "$ver" | grep -Eq '^[0-9]+(\.[0-9]+)*(-[A-Za-z0-9.-]+)?$' || {
+    echo -e "${red}Некорректная версия в имени архива: $ver${plain}"
+    return 1
+  }
+  case "$ver" in
+    *-*)
+      if type zapret2_flavor_save >/dev/null 2>&1; then
+        zapret2_flavor_save fork
+        echo -e "${yellow}Сборка закреплена: форк (суффикс $ver).${plain}"
+      fi
+      ;;
+  esac
+  case "${tar_file##*/}" in
+    *-openwrt-embedded.tar.gz) canon="zapret2-v${ver}-openwrt-embedded.tar.gz"; other="$scan_dir/zapret2-v${ver}.tar.gz" ;;
+    *) canon="zapret2-v${ver}.tar.gz"; other="$scan_dir/zapret2-v${ver}-openwrt-embedded.tar.gz" ;;
+  esac
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  cp -f "$tar_file" "$dir/$canon" || { echo -e "${red}Не удалось подготовить архив.${plain}"; return 1; }
+  [ -f "$other" ] && cp -f "$other" "$dir/" 2>/dev/null
+  export ZAPRET2_ARCHIVE_DIR="$dir"
+  export ZAPRET2_VERSION="$ver"
+  echo -e "${green}zapret2 ${ver} будет установлен из локального архива.${plain}"
+  echo -e "${yellow}Начинается переустановка zapret2: сначала предложат бэкап.${plain}"
+  DEPLOY_WANT_REINSTALL=1
+  return 0
 }
 
 deploy_list_releases() {
@@ -674,6 +841,10 @@ deploy_reset_user_files() {
     deploy_download_archive "$source" "$tag" "$variant" || return 1
   fi
   deploy_gzip_ok "$source" || return 1
+  if ! deploy_tar_paths_ok "$source"; then
+    echo -e "${red}Архив содержит небезопасные пути.${plain}"
+    return 1
+  fi
   if ! deploy_unpack "$source" "$staging"; then
     echo -e "${red}Не удалось распаковать архив.${plain}"
     return 1
@@ -684,6 +855,18 @@ deploy_reset_user_files() {
   while IFS='|' read -r path dest cls sha size exec; do
     case "$path" in ''|'#'*) continue ;; esac
     [ "$cls" = "keep-if-exists" ] || continue
+    case "$path" in /*|../*|*/../*|*/..)
+      echo -e "${red}Недопустимый путь в манифесте: $path${plain}"
+      return 1
+      ;;
+    esac
+    case "$dest" in
+      /opt/zator/*|/opt/z2r.sh) ;;
+      *)
+        echo -e "${red}Недопустимый dest в манифесте: $dest${plain}"
+        return 1
+        ;;
+    esac
     dest="$(deploy_dest_for "$dest")"
     if [ -f "$dest" ] && [ "$(file_sha256 "$dest")" != "$sha" ]; then
       idx=$((idx + 1))
@@ -747,6 +930,12 @@ deploy_menu_header() {
     MENU_WEBUI_PART=", Web-панель от: ${plain}${MENU_WEBUI_DATE}${yellow}"
   fi
   MENU_DEPLOY_NOTICE=""
+  MENU_DEPLOY_SOURCE=""
+  local mirror
+  mirror="$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)"
+  if [ -n "$mirror" ]; then
+    MENU_DEPLOY_SOURCE=", источник: ${plain}зеркало $(printf '%s' "$mirror" | sed 's#^[a-z]*://##; s#/.*##')${yellow}"
+  fi
   local zsha wsha lz lw
   zsha="$(deploy_version_field ZATOR_SHA)"
   wsha="$(deploy_version_field WEBUI_SHA)"
@@ -760,7 +949,19 @@ deploy_menu_header() {
     what="${what}Web-панель от $(deploy_latest_field LATEST_WEBUI_DATE)"
   fi
   if [ -n "$what" ]; then
-    MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
+    if [ "$MENU_DEPLOY_TRACKING" != "latest" ]; then
+      MENU_DEPLOY_NOTICE="${yellow}Закреплена версия ${plain}${MENU_DEPLOY_TRACKING}${yellow}, доступен latest: ${plain}${what}${yellow} (п.2 снимет закрепление)
+"
+    else
+      MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
+"
+    fi
+  fi
+  if type config_update_pending >/dev/null 2>&1 && config_update_pending; then
+    local cfg_date
+    cfg_date="$(config_default_last_modified)"
+    cfg_date="${cfg_date%% *}"
+    MENU_DEPLOY_NOTICE="${MENU_DEPLOY_NOTICE}${red}⬆ Есть новый конфиг от ${cfg_date}. Для применения: п.5 -> п.7${yellow}
 "
   fi
   return 0
@@ -768,15 +969,16 @@ deploy_menu_header() {
 
 deploy_update_menu() {
   DEPLOY_WANT_REINSTALL=0
+  unset ZAPRET2_ARCHIVE_DIR ZAPRET2_VERSION
   local answer ans tag variant ver tar_file file_num i found rel_num webui_answer pin_answer
   while true; do
     clear -x
     echo -e "${Fcyan}============ Обновление zator и zapret2 ============${plain}"
     deploy_menu_header
-    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}"
+    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}${MENU_DEPLOY_SOURCE}"
     echo ""
     submenu_item 1 "Проверить обновления (даты zator/webui: локально vs сервер)"
-    submenu_item 2 "Обновить zator (код, конфиг, листы, lua; панель не трогается)"
+    submenu_item 2 "Обновить zator (код, листы, lua; конфиг применится к живому, рестарт zapret2)"
     submenu_item 3 "Обновить только Web-панель"
     submenu_item 4 "Выбрать номерной релиз (список с датами; установка закрепляет версию)"
     submenu_item 5 "Установить из локального tar.gz (по умолчанию ищется в /tmp)"
@@ -784,6 +986,7 @@ deploy_update_menu() {
     submenu_item 7 "Обновить конфиг, стратегии, lua и листы"
     submenu_item 8 "Сбросить пользовательские файлы к эталону (netrogat и др.)"
     submenu_item 9 "Проверить целостность установки"
+    submenu_item 10 "Источник обновлений (зеркало или стандартный GitHub)"
     submenu_item 0 "Назад в главное меню"
     echo ""
     read -re -p "" answer
@@ -799,6 +1002,15 @@ deploy_update_menu() {
         fi
         variant="$(deploy_pick_variant)"
         if [ "$DEPLOY_UPDATE_ZATOR" = "1" ]; then
+          if [ "$(deploy_version_field TRACKING)" != "latest" ]; then
+            echo -e "${yellow}Закреплена версия $(deploy_version_field TRACKING); обновление до latest снимет закрепление.${plain}"
+            read -re -p "1 - продолжить, 0 - отмена: " pin_answer
+            if [ "$pin_answer" != "1" ]; then
+              echo -e "${yellow}Отменено.${plain}"
+              pause_enter
+              continue
+            fi
+          fi
           deploy_from_tar "$(deploy_releases_base)/latest/zator-${variant}.tar.gz" "$variant" latest || true
         elif [ "$DEPLOY_UPDATE_WEBUI" = "1" ]; then
           echo -e "${green}Ядро zator актуально, есть обновление Web-панели — п.3.${plain}"
@@ -844,7 +1056,7 @@ deploy_update_menu() {
       5)
         i=1
         found=""
-        for tar_file in /tmp/zator-*.tar.gz /tmp/*.tar.gz; do
+        for tar_file in /tmp/*.tar.gz; do
           [ -f "$tar_file" ] || continue
           found="$found
 $i. $tar_file"
@@ -872,13 +1084,28 @@ $i. $tar_file"
         pause_enter
         ;;
       6)
-        echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
-        echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
-        read -r ans
-        if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-          DEPLOY_WANT_REINSTALL=1
-          return 0
-        fi
+        echo -e "${yellow}Источник zapret2:${plain}"
+        echo -e "  ${Fcyan}1${plain} — скачать с GitHub (выбор версии)"
+        echo -e "  ${Fcyan}2${plain} — локальный архив из /tmp"
+        echo -e "  ${Fyellow}0${plain} — отмена"
+        read -re -p "" ans
+        case "$ans" in
+          1)
+            echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
+            echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
+            read -re -p "" ans
+            if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+              DEPLOY_WANT_REINSTALL=1
+              return 0
+            fi
+            ;;
+          2)
+            deploy_local_zapret2_pick || true
+            if [ "$DEPLOY_WANT_REINSTALL" = 1 ]; then
+              return 0
+            fi
+            ;;
+        esac
         ;;
       7)
         deploy_transition_menu
@@ -891,6 +1118,9 @@ $i. $tar_file"
         deploy_integrity_check || true
         pause_enter
         ;;
+      10)
+        deploy_sources_menu
+        ;;
       0|"")
         return 0
         ;;
@@ -901,7 +1131,62 @@ $i. $tar_file"
   done
 }
 
-# Механизм перехода п.7: как обновлять стратегии/lua/листы.
+deploy_sources_menu() {
+  local answer url mirror
+  while true; do
+    clear -x
+    echo -e "${Fcyan}===== Источник обновлений =====${plain}"
+    mirror="$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)"
+    if [ -n "$mirror" ]; then
+      echo -e "Сейчас: ${green}зеркало ${plain}${mirror}${yellow}"
+    else
+      echo -e "Сейчас: ${green}стандартный (GitHub)${plain}"
+    fi
+    echo -e "${yellow}Зеркало — ваш сервер с тем же лэйаутом релизов: <base>/latest/latest.json и <base>/<тег>/zator-<вариант>.tar.gz${plain}"
+    echo ""
+    submenu_item 1 "Указать зеркало (URL)"
+    submenu_item 2 "Сбросить на стандартный (GitHub)"
+    submenu_item 0 "Назад"
+    echo ""
+    read -re -p "" answer
+    case "$answer" in
+      1)
+        read -re -p "Базовый URL зеркала (0 - отмена): " url
+        case "$url" in
+          0|"") ;;
+          http://*|https://*)
+            if printf '%s' "$url" | grep -q '[^A-Za-z0-9:/.?&=%~_-]'; then
+              echo -e "${red}URL содержит недопустимые символы.${plain}"
+            else
+              url="${url%/}"
+              mkdir -p "$DEPLOY_CACHE_DIR"
+              printf 'RELEASES_MIRROR="%s"\n' "$url" > "$(deploy_sources_file)"
+              echo -e "${green}Зеркало сохранено: $url${plain}"
+              deploy_check_latest || true
+            fi
+            ;;
+          *)
+            echo -e "${red}URL должен начинаться с http:// или https://${plain}"
+            ;;
+        esac
+        pause_enter
+        ;;
+      2)
+        rm -f "$(deploy_sources_file)"
+        echo -e "${green}Сброшено на стандартный источник (GitHub).${plain}"
+        pause_enter
+        ;;
+      0|"")
+        return 0
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
+# Механизм перехода п.7: как обновлять конфиг/стратегии/lua/листы.
 deploy_transition_menu() {
   local answer
   while true; do
@@ -909,27 +1194,19 @@ deploy_transition_menu() {
     echo -e "${Fcyan}===== Обновление конфига, стратегий, lua и листов =====${plain}"
     echo -e "${yellow}Пользовательские файлы (netrogat.txt, TCP_Custom.txt, substrings-листы, custom_tls.bin) не перезаписываются молча.${plain}"
     echo ""
-    submenu_item 1 "Обновить, не трогая пользовательские файлы (рекомендуется)"
-    submenu_item 2 "То же, но сначала создать бэкап"
+    submenu_item 1 "Применить установленный config.default (без скачивания)"
+    submenu_item 2 "Перекачать релиз и применить (обновит и листы, lua)"
     submenu_item 3 "Полный сброс листов и config до эталона (прежнее поведение п.5)"
     submenu_item 0 "Назад"
     echo ""
     read -re -p "" answer
     case "$answer" in
       1)
-        deploy_from_tar "$(deploy_releases_base)/latest/zator-$(deploy_pick_variant).tar.gz" "$(deploy_pick_variant)" "" || true
+        deploy_apply_installed_config || true
         pause_enter
         ;;
       2)
-        if type backup_helper_ask_and_create >/dev/null 2>&1; then
-          backup_helper_ask_and_create
-          deploy_from_tar "$(deploy_releases_base)/latest/zator-$(deploy_pick_variant).tar.gz" "$(deploy_pick_variant)" "" || true
-          if type backup_update_offer_restore >/dev/null 2>&1; then
-            backup_update_offer_restore || true
-          fi
-        else
-          echo -e "${red}Бэкап-хелпер недоступен вне меню z2r.${plain}"
-        fi
+        deploy_from_tar "$(deploy_releases_base)/latest/zator-$(deploy_pick_variant).tar.gz" "$(deploy_pick_variant)" "" || true
         pause_enter
         ;;
       3)

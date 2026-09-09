@@ -165,7 +165,10 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
   "tracking": "latest",          // latest | <тег релиза> — пин автообновления лаунчера
   "update_available": false,
   "latest_zator_date": "",       // даты доступного обновления (пусто — проверки не было)
-  "latest_webui_date": ""
+  "latest_webui_date": "",
+  "config_date": "2026-09-01 12:00:37 UTC",       // дата «# Last modified» живого config
+  "config_default_date": "2026-09-01 12:00:37 UTC", // дата эталонного config.default
+  "config_update_pending": false   // true — config.default новее живого config (применение: CLI п.5 -> п.7)
 }
 ```
 

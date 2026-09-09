@@ -510,6 +510,23 @@ config_last_modified() {
   printf '%s\n' "${header:-Неизвестно}"
 }
 
+config_default_last_modified() {
+  config_last_modified "${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+}
+
+# Живой config — копия эталона, даты «# Last modified» у них равны сразу
+# после применения; sed-правки меню заголовок не трогают. Расхождение дат
+# означает, что config.default новее и не применён.
+# rc=0 — эталон новее, 1 — даты равны/эталон старее, 2 — не определить.
+config_update_pending() {
+  local live ref
+  live="$(sed -n 's/^# Last modified:[[:space:]]*//p' "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null | head -n1 | tr -d '\r')"
+  ref="$(sed -n 's/^# Last modified:[[:space:]]*//p' "${ZAPRET2_ROOT:-/opt/zapret2}/config.default" 2>/dev/null | head -n1 | tr -d '\r')"
+  case "$live" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 2 ;; esac
+  case "$ref" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 2 ;; esac
+  [ "$ref" \> "$live" ]
+}
+
 # Короткая версия установленного nfqws2 (zapret2) из --version:
 # 'v1.0.5.1-reasm-fix' (хеш в скобках и lua_compat_ver отбрасываются),
 # self-built 'self-built Aug 25 2026 17:08:09'. Пустая строка, если

@@ -112,7 +112,7 @@ fi
 STAGE="$WORK/unpack"
 mkdir -p "$STAGE"
 tar -xzf "$DIST/zator-full.tar.gz" -C "$STAGE" || fail "распаковка full"
-grep -q '^ZATOR_VERSION="deploy-' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без версии"
+grep -q '^ZATOR_VERSION="..*"$' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без версии"
 grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без TRACKING"
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"
 grep -q '^_root/z2r.sh|/opt/z2r.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без _root/z2r.sh"
@@ -161,6 +161,126 @@ grep -q SURVIVED "$WORK/hdr.out" || fail "deploy_menu_header роняет set -e
 grep -q 'PART=\[\]' "$WORK/hdr.out" || fail "шапка пишет про Web-панель без установленной панели"
 ok "deploy_menu_header безопасен под set -e и молчит про отсутствующую панель"
 
+# --- config_update_pending + уведомление «Есть новый конфиг» в шапке ---
+source "$REPO_DIR/lib/config.sh"
+grep -q 'config_update_pending' "$REPO_DIR/webui-src/src/api/types.ts" || fail "types.ts без config_update_pending"
+grep -q 'config_update_pending' "$REPO_DIR/webui-src/src/components/status/StatusCards.vue" || fail "StatusCards без config_update_pending"
+grep -q 'config_update_pending' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail "_lib.sh без config_update_pending"
+grep -q 'config_update_pending' "$REPO_DIR/webui/dev/fake_router_server.py" || fail "fake_router_server без config_update_pending"
+mkdir -p "$ZAPRET2_ROOT"
+printf '# Last modified: 2026-09-05 12:17:37 UTC\n' > "$ZAPRET2_ROOT/config"
+printf '# Last modified: 2026-09-05 12:17:37 UTC\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending && fail "pending при равных датах"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending || fail "pending не сработал при новом эталоне"
+printf '# Last modified: 2026-09-04 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending && fail "pending при эталоне старее живого конфига"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\r\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending || fail "pending не работает с CRLF-заголовком"
+mv "$ZAPRET2_ROOT/config.default" "$ZAPRET2_ROOT/config.default.bak"
+config_update_pending && fail "pending без config.default"
+mv "$ZAPRET2_ROOT/config.default.bak" "$ZAPRET2_ROOT/config.default"
+printf 'нет заголовка\n' > "$ZAPRET2_ROOT/config"
+config_update_pending && fail "pending без заголовка в живом конфиге"
+printf '# Last modified: 2026-09-05 12:17:37 UTC\n' > "$ZAPRET2_ROOT/config"
+deploy_menu_header >/dev/null 2>&1
+case "$MENU_DEPLOY_NOTICE" in *"Есть новый конфиг от 2026-09-06. Для применения: п.5 -> п.7"*) ;; *) fail "шапка без уведомления о новом конфиге" ;; esac
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+deploy_menu_header >/dev/null 2>&1
+case "$MENU_DEPLOY_NOTICE" in *"Есть новый конфиг"*) fail "шапка показывает уведомление при применённом конфиге" ;; esac
+rm -f "$ZAPRET2_ROOT/config" "$ZAPRET2_ROOT/config.default"
+ok "config_update_pending и уведомление шапки"
+
+# --- зеркало релизов: резолв sources.env и приоритет env ---
+grep -q 'deploy_sources_menu' "$REPO_DIR/lib/deploy.sh" || fail "нет подменю источников"
+grep -q 'submenu_item 10' "$REPO_DIR/lib/deploy.sh" || fail "нет п.10 в меню 5"
+mkdir -p "$ZATOR_ROOT/extra_strats/cache/deploy"
+printf 'RELEASES_MIRROR="https://mirror.example.com/zator"\n' > "$(deploy_sources_file)"
+[ "$(deploy_releases_base)" = "https://mirror.example.com/zator" ] || fail "deploy_releases_base не читает зеркало из sources.env"
+deploy_menu_header >/dev/null 2>&1
+case "$MENU_DEPLOY_SOURCE" in *"зеркало mirror.example.com"*) ;; *) fail "шапка не показывает источник-зеркало" ;; esac
+( export Z2R_RELEASES_BASE="https://env.example.com/dl"
+  [ "$(deploy_releases_base)" = "https://env.example.com/dl" ] ) \
+  || fail "env Z2R_RELEASES_BASE не приоритетнее sources.env"
+rm -f "$(deploy_sources_file)"
+case "$(deploy_releases_base)" in https://github.com/*) ;; *) fail "сброс не вернул GitHub-источник" ;; esac
+ok "зеркало релизов: резолв, приоритет env, сброс"
+
+# --- п.6: локальный архив zapret2 ---
+[ "$(deploy_parse_zapret2_tarball_name /x/y/zapret2-v1.0.5.1.tar.gz)" = "1.0.5.1" ] || fail "парсер: обычная версия"
+[ "$(deploy_parse_zapret2_tarball_name zapret2-v1.0.5.1-reasm-fix.tar.gz)" = "1.0.5.1-reasm-fix" ] || fail "парсер: суффикс форка"
+[ "$(deploy_parse_zapret2_tarball_name zapret2-v1.0.5.1-openwrt-embedded.tar.gz)" = "1.0.5.1" ] || fail "парсер: openwrt-embedded"
+deploy_parse_zapret2_tarball_name zapret2-v.tar.gz >/dev/null 2>&1 && fail "парсер принял пустую версию"
+deploy_parse_zapret2_tarball_name zator-full.tar.gz >/dev/null 2>&1 && fail "парсер принял чужой архив"
+Z2R_TMP_DIR="$WORK/z2rtmp"
+FLAVOR_MARK="$WORK/flavor.mark"
+zapret2_flavor_save() { echo "$1" >> "$FLAVOR_MARK"; }
+
+rm -rf "$Z2R_TMP_DIR"; mkdir -p "$Z2R_TMP_DIR"; rm -f "$FLAVOR_MARK"
+printf 'gz' > "$Z2R_TMP_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz"
+deploy_local_zapret2_pick <<< "1" >/dev/null 2>&1 || fail "выбор локального архива упал"
+[ "$ZAPRET2_VERSION" = "1.0.5.1-reasm-fix" ] || fail "ZAPRET2_VERSION из имени архива"
+[ "$ZAPRET2_ARCHIVE_DIR" = "$Z2R_TMP_DIR/z2r_local_zapret2" ] || fail "ZAPRET2_ARCHIVE_DIR не подготовлен"
+[ -f "$ZAPRET2_ARCHIVE_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz" ] || fail "нет канонического имени архива"
+grep -q '^fork$' "$FLAVOR_MARK" || fail "суффикс версии не закрепил флэвор fork"
+[ "$DEPLOY_WANT_REINSTALL" = 1 ] || fail "локальный архив не запросил переустановку"
+DEPLOY_WANT_REINSTALL=0
+
+rm -rf "$Z2R_TMP_DIR"; mkdir -p "$Z2R_TMP_DIR"; rm -f "$FLAVOR_MARK"
+printf 'gz' > "$Z2R_TMP_DIR/zapret2-v1.0.5.tar.gz"
+printf 'gz' > "$Z2R_TMP_DIR/zapret2-v1.0.5-openwrt-embedded.tar.gz"
+deploy_local_zapret2_pick <<< "2" >/dev/null 2>&1 || fail "выбор без суффикса упал"
+[ "$ZAPRET2_VERSION" = "1.0.5" ] || fail "версия без суффикса не распознана"
+[ -f "$ZAPRET2_ARCHIVE_DIR/zapret2-v1.0.5.tar.gz" ] || fail "нет канонического имени (standard)"
+[ -f "$ZAPRET2_ARCHIVE_DIR/zapret2-v1.0.5-openwrt-embedded.tar.gz" ] || fail "openwrt-вариант не подтянут рядом"
+[ -s "$FLAVOR_MARK" ] && fail "версия без суффикса сменила флэвор"
+DEPLOY_WANT_REINSTALL=0
+
+deploy_local_zapret2_pick <<< "0" >/dev/null 2>&1 || fail "отмена упала"
+[ "$DEPLOY_WANT_REINSTALL" = 0 ] || fail "отмена не отменила переустановку"
+unset ZAPRET2_ARCHIVE_DIR ZAPRET2_VERSION
+unset -f zapret2_flavor_save
+ok "п.6: локальный архив zapret2, парсер, флэвор, отмена"
+
+# --- харденинг: отказ на небезопасных tar и манифестах ---
+EVIL_DIR="$WORK/evil"
+mkdir -p "$EVIL_DIR/deep"
+printf 'x' > "$EVIL_DIR/deep/plain"
+GOOD_TAR="$EVIL_DIR/good.tar.gz"
+tar -czf "$GOOD_TAR" -C "$EVIL_DIR/deep" plain
+deploy_tar_paths_ok "$GOOD_TAR" || fail "валидатор отклонил чистый tar"
+# GNU tar срезает ../ при создании, поэтому скармливаем листинг моком tar
+MOCK_TAR="$WORK/mockbin/tar"
+mkdir -p "$WORK/mockbin"
+Z2R_EVIL_TAR="$GOOD_TAR"
+export Z2R_EVIL_TAR
+cat > "$MOCK_TAR" <<'MOCKEOF'
+#!/bin/sh
+if [ "$1" = "-tzf" ] && [ "$2" = "$Z2R_EVIL_TAR" ]; then
+  printf '%s\n' '../evil' 'plain'
+  exit 0
+fi
+exec /usr/bin/tar "$@"
+MOCKEOF
+chmod +x "$MOCK_TAR"
+if PATH="$WORK/mockbin:$PATH" deploy_tar_paths_ok "$GOOD_TAR"; then
+  fail "валидатор пропустил tar с ../-членом"
+fi
+PATH="$WORK/mockbin:$PATH" deploy_from_tar "$GOOD_TAR" >/dev/null 2>&1 \
+  && fail "deploy_from_tar принял tar с ../-членом"
+unset Z2R_EVIL_TAR
+BAD_MAN_DIR="$WORK/badman"
+mkdir -p "$BAD_MAN_DIR/stage"
+printf 'x' > "$BAD_MAN_DIR/stage/file"
+mkdir -p "$BAD_MAN_DIR/stage/extra_strats/cache/deploy"
+printf 'file|/etc/cron.d/pwn|auto|%s|1|0\n' "$(file_sha256 "$BAD_MAN_DIR/stage/file")" \
+  > "$BAD_MAN_DIR/stage/extra_strats/cache/deploy/manifest.tsv"
+( cd "$REPO_DIR" && ZATOR_ROOT="$WORK/badman-target" bash -c '
+    source lib/deploy.sh >/dev/null 2>&1
+    deploy_apply_staging "'"$BAD_MAN_DIR"'/stage" latest' ) > "$BAD_MAN_DIR/out.txt" 2>&1
+grep -q '/etc/cron.d/pwn' "$BAD_MAN_DIR/out.txt" || fail "манифест с /etc dest не отклонён"
+ok "харденинг: tar с ../ и манифест с чужим dest отклоняются"
+
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"
@@ -198,6 +318,32 @@ grep -q '^stop$' "$RESTART_MARK" || fail "нет stop перед примене�
 grep -q '^restart$' "$RESTART_MARK" || fail "нет restart после применения config.default"
 ok "payload config.default применяется к живому конфигу (stop -> apply -> restart)"
 unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
+
+# --- 4c. лёгкий путь п.7: применить установленный config.default без сети ---
+APPLY2_MARK="$WORK/apply2.mark"
+config_apply_from_default() { echo applied >> "$APPLY2_MARK"; }
+z2r_service_action() { :; }
+backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
+rm -f "$ZAPRET2_ROOT/config" "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.default"
+deploy_apply_installed_config >/dev/null 2>&1 && fail "лёгкий путь без эталона должен вернуть ошибку"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZATOR_ROOT/.deploy-payload/config.default"
+printf '# Last modified: 2026-09-05 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+rm -f "$APPLY2_MARK"
+deploy_apply_installed_config >/dev/null 2>&1 || fail "лёгкий путь из payload упал"
+[ -s "$APPLY2_MARK" ] || fail "лёгкий путь не вызвал config_apply_from_default"
+[ -f "$ZAPRET2_ROOT/config.default" ] || fail "эталон не скопирован из payload в корень zapret2"
+cmp -s "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.default" || fail "payload рассинхронизирован после применения"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+rm -f "$APPLY2_MARK"
+deploy_apply_installed_config >/dev/null 2>&1 || fail "лёгкий путь при равных датах упал"
+[ -s "$APPLY2_MARK" ] && fail "лёгкий путь применил конфиг при равных датах"
+rm -f "$ZAPRET2_ROOT/config"
+rm -f "$APPLY2_MARK"
+deploy_apply_installed_config >/dev/null 2>&1 || fail "лёгкий путь без живого конфига упал"
+[ -s "$APPLY2_MARK" ] && fail "лёгкий путь применил конфиг без живого config"
+printf '# Last modified: 2026-09-05 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
+ok "лёгкий путь п.7: применение без скачивания и self-heal payload"
 
 # --- 5. обновление webui-вариантом: слияние version.env ---
 
@@ -276,6 +422,39 @@ deploy_reset_user_files "$DIST/zator-full.tar.gz" <<< "$custom_num" >/dev/null 2
 grep -q 'user-domain-3.example' "$ZATOR_ROOT/lists/netrogat.txt" || fail "выборочный reset тронул не выбранный файл"
 grep -q 'custom-2.example' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" && fail "выбранный файл не сброшен"
 ok "reset_user_files: all и выборочный"
+
+# --- оффлайн-сборка: bundle (zator-full + zapret2) и установка без сети ---
+OFFLINE_DIR="$WORK/offline"
+mkdir -p "$OFFLINE_DIR/fake-z/zapret2-v1.0.5.1-reasm-fix"
+printf '#!/bin/sh\n' > "$OFFLINE_DIR/fake-z/zapret2-v1.0.5.1-reasm-fix/install_bin.sh"
+printf '#!/bin/sh\n' > "$OFFLINE_DIR/fake-z/zapret2-v1.0.5.1-reasm-fix/install_easy.sh"
+tar -czf "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz" -C "$OFFLINE_DIR/fake-z" zapret2-v1.0.5.1-reasm-fix
+tar -czf "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix-openwrt-embedded.tar.gz" -C "$OFFLINE_DIR/fake-z" zapret2-v1.0.5.1-reasm-fix
+bash "$REPO_DIR/tools/build-offline-archive.sh" \
+  --zator-tar "$DIST/zator-full.tar.gz" \
+  --zapret2 "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz" \
+  --zapret2-openwrt "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix-openwrt-embedded.tar.gz" \
+  --version 1.0.5.1-reasm-fix \
+  --project-dir "$REPO_DIR" \
+  --output "$OFFLINE_DIR/zator-offline-test.tar.gz" >/dev/null || fail "сборка офлайн-бандла упала"
+tar -tzf "$OFFLINE_DIR/zator-offline-test.tar.gz" | grep -q 'zator-full.tar.gz' || fail "в бандле нет zator-full.tar.gz"
+tar -tzf "$OFFLINE_DIR/zator-offline-test.tar.gz" | grep -q 'README.txt' || fail "в бандле нет README.txt"
+rm -rf "$OFFLINE_DIR/run" "$OFFLINE_DIR/optroot" "$OFFLINE_DIR/bin"
+mkdir -p "$OFFLINE_DIR/run" "$OFFLINE_DIR/bin"
+tar -xzf "$OFFLINE_DIR/zator-offline-test.tar.gz" -C "$OFFLINE_DIR/run"
+Z2R_INSTALL_DIR="$OFFLINE_DIR/optroot" Z2R_BIN_PATH="$OFFLINE_DIR/bin/z2r" Z2R_NO_EXEC=1 \
+  sh "$OFFLINE_DIR/run/zator-offline-1.0.5.1-reasm-fix/z2r" > "$OFFLINE_DIR/install.out" 2>&1 \
+  || fail "офлайн-установка упала"
+grep -q 'OFFLINE_READY version=1.0.5.1-reasm-fix' "$OFFLINE_DIR/install.out" || fail "нет OFFLINE_READY"
+[ -f "$OFFLINE_DIR/optroot/z2r.sh" ] || fail "офлайн: нет z2r.sh"
+[ -f "$OFFLINE_DIR/optroot/zator/z2r_lib/deploy.sh" ] || fail "офлайн: нет z2r_lib"
+[ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/config.default" ] || fail "офлайн: нет payload config.default"
+[ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/fake_files.tar.gz" ] || fail "офлайн: нет payload fake_files.tar.gz"
+[ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/Entware/z2r-strategy-validator" ] || fail "офлайн: нет payload validator"
+grep -q '^TRACKING="offline-1.0.5.1-reasm-fix"$' "$OFFLINE_DIR/optroot/zator/extra_strats/cache/deploy/version.env" || fail "офлайн: TRACKING не закреплён"
+grep -q '^AUTOUPDATE=off$' "$OFFLINE_DIR/optroot/z2r.conf" || fail "офлайн: AUTOUPDATE не выключен"
+[ -f "$OFFLINE_DIR/bin/z2r" ] || fail "офлайн: команда z2r не установлена"
+ok "офлайн-сборка: bundle, установка, пин версии, AUTOUPDATE=off"
 
 echo
 echo "deploy tar smoke ok"

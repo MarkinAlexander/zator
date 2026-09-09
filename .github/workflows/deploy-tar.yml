@@ -12,6 +12,11 @@ name: deploy-tar
 # Ассеты каждого релиза: zator-<variant>.tar.gz + .sha256 + .manifest.json +
 # .manifest.tsv + latest.json (указатель сборки с размерами для проверки
 # свободного места на устройстве).
+#
+# Офлайн-сборка zator-offline-<zapret2вер>.tar.gz (zator-full + архивы zapret2
+# из форка MarkinAlexander) — галочка build_offline, по умолчанию ВЫКЛЮЧЕНА:
+# ассет тяжёлый и нужен только к значимым релизам. У предыдущего latest
+# офлайн-ассет переносится в новый latest, чтобы ссылки не ломались.
 
 on:
   workflow_dispatch:
@@ -30,6 +35,15 @@ on:
         type: boolean
         required: false
         default: true
+      build_offline:
+        description: 'Собрать офлайн-сборку (zator + zapret2 из форка)'
+        type: boolean
+        required: false
+        default: false
+      zapret2_version:
+        description: 'Версия zapret2 для офлайн-сборки (пусто = свежий релиз форка)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -66,6 +80,36 @@ jobs:
               const a = m.assets[v];
               if (!a || !a.size || !a.sha256 || !a.unpackedSize || !a.url) process.exit(1);
             }'
+
+      - name: Build offline bundle
+        if: ${{ inputs.build_offline }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZAPRET2_VERSION_INPUT: ${{ inputs.zapret2_version }}
+        run: |
+          V="${ZAPRET2_VERSION_INPUT#v}"
+          [ -n "$V" ] || V="$(gh api repos/MarkinAlexander/zapret2/releases/latest --jq .tag_name | sed 's/^v//')"
+          [ -n "$V" ] || { echo "не удалось определить версию zapret2" >&2; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          base="https://github.com/MarkinAlexander/zapret2/releases/download/v$V"
+          curl -fsSL -o "webui-src/dist/zapret2-v$V.tar.gz" "$base/zapret2-v$V.tar.gz"
+          curl -fsSL -o "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz" "$base/zapret2-v$V-openwrt-embedded.tar.gz"
+          bash tools/build-offline-archive.sh \
+            --zator-tar webui-src/dist/zator-full.tar.gz \
+            --zapret2 "webui-src/dist/zapret2-v$V.tar.gz" \
+            --zapret2-openwrt "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz" \
+            --version "$V" \
+            --output "webui-src/dist/zator-offline-$V.tar.gz"
+          rm -f "webui-src/dist/zapret2-v$V.tar.gz" "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz"
+          (cd webui-src/dist && sha256sum "zator-offline-$V.tar.gz" > "zator-offline-$V.tar.gz.sha256")
+
+      - name: Carry over offline asset from previous latest
+        if: ${{ inputs.update_latest && !inputs.build_offline }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download latest -p 'zator-offline-*' -D webui-src/dist --clobber \
+            || echo "офлайн-ассета в предыдущем latest не было"
 
       - name: Release version tag
         id: rel

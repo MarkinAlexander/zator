@@ -40,13 +40,20 @@ const cards = computed<CardDef[]>(() => {
   const verParts: string[] = []
   if (ver?.zator_date) verParts.push(`zator от ${ver.zator_date}`)
   if (ver?.webui_date) verParts.push(`Web-панель от ${ver.webui_date}`)
+  const cfgPending = ver?.config_update_pending ?? false
+  const cfgDate = ver?.config_default_date ? ver.config_default_date.slice(0, 10) : ''
   const verSub = ver?.update_available
     ? (verParts.length ? verParts.join('\n') : undefined)
-    : (ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined)
+    : cfgPending
+      ? `конфиг от ${cfgDate}. Для применения: п.5 -> п.7 в меню z2r`
+      : (ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined)
   let verValue = ver?.zator_date || '—'
   let verClass = ''
   if (ver?.update_available) {
     verValue = 'Есть обновление'
+    verClass = 'info'
+  } else if (cfgPending) {
+    verValue = 'Есть новый конфиг'
     verClass = 'info'
   }
 
