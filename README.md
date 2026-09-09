@@ -56,7 +56,7 @@ sed -i 's|bin.entware.net|entware.diversion.ch|g' /opt/etc/opkg.conf
 <a id="поддержка"></a>
 ### 💬 Поддержка
 Чат для вопросов и обсуждения, а так же если есть желание поддержать проект:  
-[https://t.me/zee4r/](https://t.me/zee4r/)
+[https://t.me/zee4r](https://t.me/zee4r)
 
 ---
 
