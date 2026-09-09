@@ -5,18 +5,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 CALLER_DIR="$(pwd)"
-RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2/releases/download}"
-LATEST_API_URL="${ZAPRET2_LATEST_API_URL:-https://api.github.com/repos/bol-van/zapret2/releases/latest}"
+RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/MarkinAlexander/zapret2/releases/download}"
+LATEST_API_URL="${ZAPRET2_LATEST_API_URL:-https://api.github.com/repos/MarkinAlexander/zapret2/releases/latest}"
 Z2R_BRANCH="${Z2R_BRANCH:-zator}"
 PROJECT_ARCHIVE_URL="${Z2R_PROJECT_ARCHIVE_URL:-https://github.com/AloofLibra/zator/archive/refs/heads/${Z2R_BRANCH}.tar.gz}"
 
 usage() {
   cat >&2 <<EOF
 Использование: $0 [параметры]
-  --version VERSION          версия zapret2; по умолчанию latest
+  --version VERSION          версия zapret2; по умолчанию latest (допустим
+                             суффикс форка: 1.0.5.1-reasm-fix)
   --platform TARGET         standard, openwrt или both; по умолчанию both
   --zapret2 FILE            локальный standard release вместо скачивания
   --zapret2-openwrt FILE    локальный OpenWrt release вместо скачивания
+  --zator-tar FILE          готовый zator-<variant>.tar.gz (pack-zator-tar.mjs)
+                             вместо копии дерева репо; bundle = z2r + tar + vendor
   --project-dir DIR         локальный checkout zator вместо автоопределения
   --output FILE             путь итогового zator-offline-VERSION.tar.gz
 EOF
@@ -53,14 +56,14 @@ download_file() {
 
 normalize_version() {
   local value="${1#v}"
-  printf '%s\n' "$value" | grep -Eq '^[0-9]+(\.[0-9]+)*$' || return 1
+  printf '%s\n' "$value" | grep -Eq '^[0-9]+(\.[0-9]+)*(-[A-Za-z0-9.-]+)?$' || return 1
   printf '%s' "$value"
 }
 
 archive_version() {
   local name
   name="$(basename -- "$1")"
-  if [[ "$name" =~ ^zapret2-v([0-9]+(\.[0-9]+)*)\.tar\.gz$ ]]; then
+  if [[ "$name" =~ ^zapret2-v([0-9]+(\.[0-9]+)*(-[A-Za-z0-9.-]+)?)\.tar\.gz$ ]]; then
     printf '%s' "${BASH_REMATCH[1]}"
     return 0
   fi
@@ -70,7 +73,7 @@ archive_version() {
 openwrt_archive_version() {
   local name
   name="$(basename -- "$1")"
-  if [[ "$name" =~ ^zapret2-v([0-9]+(\.[0-9]+)*)-openwrt-embedded\.tar\.gz$ ]]; then
+  if [[ "$name" =~ ^zapret2-v([0-9]+(\.[0-9]+)*(-[A-Za-z0-9.-]+)?)-openwrt-embedded\.tar\.gz$ ]]; then
     printf '%s' "${BASH_REMATCH[1]}"
     return 0
   fi
@@ -142,6 +145,7 @@ validate_archive_paths() {
 
 zapret2_archive=""
 openwrt_archive=""
+zator_tar=""
 project_dir=""
 project_dir_was_set=0
 requested_version="latest"
@@ -172,6 +176,11 @@ while [ "$#" -gt 0 ]; do
     --zapret2-openwrt)
       [ "$#" -ge 2 ] || usage
       openwrt_archive="$2"
+      shift 2
+      ;;
+    --zator-tar)
+      [ "$#" -ge 2 ] || usage
+      zator_tar="$2"
       shift 2
       ;;
     --project-dir)
@@ -215,29 +224,36 @@ trap 'rm -rf "$work_dir"' EXIT
 download_dir="$work_dir/downloads"
 mkdir -p "$download_dir"
 
-if [ -z "$project_dir" ]; then
-  project_dir="$DEFAULT_REPO_DIR"
-fi
-if ! project_tree_is_valid "$project_dir"; then
-  if [ "$project_dir_was_set" -eq 1 ]; then
-    fail "в --project-dir отсутствует полный checkout zator: $project_dir"
+if [ -z "$zator_tar" ]; then
+  if [ -z "$project_dir" ]; then
+    project_dir="$DEFAULT_REPO_DIR"
   fi
-  echo "Локальный checkout zator не найден. Загрузка ветки $Z2R_BRANCH..."
-  project_archive="$download_dir/zator-$Z2R_BRANCH.tar.gz"
-  project_extract_dir="$work_dir/project"
-  download_file "$project_archive" "$PROJECT_ARCHIVE_URL"
-  validate_archive_paths "$project_archive"
-  mkdir -p "$project_extract_dir"
-  tar -xzf "$project_archive" -C "$project_extract_dir"
-  project_dir=""
-  for candidate in "$project_extract_dir"/*; do
-    if [ -d "$candidate" ]; then
-      project_dir="$candidate"
-      break
+  if ! project_tree_is_valid "$project_dir"; then
+    if [ "$project_dir_was_set" -eq 1 ]; then
+      fail "в --project-dir отсутствует полный checkout zator: $project_dir"
     fi
-  done
-  [ -n "$project_dir" ] && project_tree_is_valid "$project_dir" || \
-    fail "скачанный snapshot ветки $Z2R_BRANCH не содержит полный проект zator"
+    echo "Локальный checkout zator не найден. Загрузка ветки $Z2R_BRANCH..."
+    project_archive="$download_dir/zator-$Z2R_BRANCH.tar.gz"
+    project_extract_dir="$work_dir/project"
+    download_file "$project_archive" "$PROJECT_ARCHIVE_URL"
+    validate_archive_paths "$project_archive"
+    mkdir -p "$project_extract_dir"
+    tar -xzf "$project_archive" -C "$project_extract_dir"
+    project_dir=""
+    for candidate in "$project_extract_dir"/*; do
+      if [ -d "$candidate" ]; then
+        project_dir="$candidate"
+        break
+      fi
+    done
+    [ -n "$project_dir" ] && project_tree_is_valid "$project_dir" || \
+      fail "скачанный snapshot ветки $Z2R_BRANCH не содержит полный проект zator"
+  fi
+else
+  [ -f "$zator_tar" ] || fail "не найден --zator-tar: $zator_tar"
+  validate_archive_paths "$zator_tar"
+  [ -n "$project_dir" ] || project_dir="$DEFAULT_REPO_DIR"
+  [ -f "$project_dir/offline/z2r" ] || fail "в $project_dir нет offline/z2r (нужен checkout репозитория)"
 fi
 REPO_DIR="$(cd -- "$project_dir" && pwd)"
 version=""
@@ -296,28 +312,48 @@ fi
 
 bundle_name="zator-offline-$version"
 bundle_dir="$work_dir/$bundle_name"
-payload_dir="$bundle_dir/payload"
-mkdir -p "$payload_dir" "$bundle_dir/vendor"
+mkdir -p "$bundle_dir/vendor"
 
 cp -f "$REPO_DIR/offline/z2r" "$bundle_dir/z2r"
-for dir in blockcheck2.d data Entware extra_strats fake firewall init.d lib lists lua orchestra webui; do
-  cp -R "$REPO_DIR/$dir" "$payload_dir/$dir"
-done
-for file in z2r.sh config.default fake_files.tar.gz recommendations.txt \
-  3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md; do
-  cp -f "$REPO_DIR/$file" "$payload_dir/$file"
-done
+
+if [ -n "$zator_tar" ]; then
+  cp -f "$zator_tar" "$bundle_dir/$(basename -- "$zator_tar")"
+  cat > "$bundle_dir/README.txt" <<EOF
+Офлайн-сборка zator + zapret2 v${version}.
+
+Установка (интернет не нужен):
+1. Распакуйте архив на роутере, например в /tmp.
+2. Запустите ./z2r из каталога распаковки.
+
+Установятся zator, zapret2 ${version} и конфиг. Версия закреплена,
+автообновления выключены. Снять закрепление: меню z2r, п.5, п.2 или п.4.
+EOF
+else
+  payload_dir="$bundle_dir/payload"
+  mkdir -p "$payload_dir"
+  for dir in blockcheck2.d data Entware extra_strats fake firewall init.d lib lists lua orchestra webui; do
+    cp -R "$REPO_DIR/$dir" "$payload_dir/$dir"
+  done
+  for file in z2r.sh config.default fake_files.tar.gz recommendations.txt \
+    3proxy.cfg del.proxyauth user_test2.sh merlin_wan_restart_zapret.sh README.md; do
+    cp -f "$REPO_DIR/$file" "$payload_dir/$file"
+  done
+fi
 if [ -n "$zapret2_archive" ]; then
   cp -f "$zapret2_archive" "$bundle_dir/vendor/$(basename -- "$zapret2_archive")"
 fi
 if [ -n "$openwrt_archive" ]; then
   cp -f "$openwrt_archive" "$bundle_dir/vendor/$(basename -- "$openwrt_archive")"
 fi
-chmod +x "$bundle_dir/z2r" "$payload_dir/z2r.sh"
+if [ -n "$zator_tar" ]; then
+  chmod +x "$bundle_dir/z2r"
+else
+  chmod +x "$bundle_dir/z2r" "$payload_dir/z2r.sh"
+fi
 
 (
   cd "$bundle_dir"
-  find payload vendor -type f -print | LC_ALL=C sort | while IFS= read -r file; do
+  find . -type f ! -name MANIFEST.files -print | sed 's#^\./##' | LC_ALL=C sort | while IFS= read -r file; do
     size="$(wc -c < "$file" | tr -d '[:space:]')"
     printf '%s %s\n' "$size" "$file"
   done > MANIFEST.files

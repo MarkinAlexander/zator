@@ -130,6 +130,12 @@ z2r_download_project_file() {
     return 0
   fi
 
+  # Офлайн-сборка с tar-деплоем: установленное дерево уже актуально,
+  # локальный файл — источник, сеть не трогаем.
+  if [ "${Z2R_OFFLINE:-0}" = "1" ] && [ -f "$dest" ]; then
+    return 0
+  fi
+
   mirror="$(z2r_mirror_url "$rel")"
   mkdir -p "$(dirname "$dest")"
   rm -f "$tmp"
@@ -548,10 +554,6 @@ z2r_archive_preflight() {
   local required_archive
 
   [ "${Z2R_OFFLINE:-0}" = "1" ] || return 0
-  [ -n "${Z2R_PROJECT_DIR:-}" ] && [ -d "$Z2R_PROJECT_DIR" ] || {
-    echo -e "${red}Не найден payload проекта из установочного архива.${plain}"
-    return 1
-  }
   [ -n "${ZAPRET2_ARCHIVE_DIR:-}" ] && [ -d "$ZAPRET2_ARCHIVE_DIR" ] || {
     echo -e "${red}Не найден каталог vendor из установочного архива.${plain}"
     return 1

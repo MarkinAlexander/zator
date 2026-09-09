@@ -384,5 +384,38 @@ grep -q 'user-domain-3.example' "$ZATOR_ROOT/lists/netrogat.txt" || fail "выб
 grep -q 'custom-2.example' "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" && fail "выбранный файл не сброшен"
 ok "reset_user_files: all и выборочный"
 
+# --- оффлайн-сборка: bundle (zator-full + zapret2) и установка без сети ---
+OFFLINE_DIR="$WORK/offline"
+mkdir -p "$OFFLINE_DIR/fake-z/zapret2-v1.0.5.1-reasm-fix"
+printf '#!/bin/sh\n' > "$OFFLINE_DIR/fake-z/zapret2-v1.0.5.1-reasm-fix/install_bin.sh"
+printf '#!/bin/sh\n' > "$OFFLINE_DIR/fake-z/zapret2-v1.0.5.1-reasm-fix/install_easy.sh"
+tar -czf "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz" -C "$OFFLINE_DIR/fake-z" zapret2-v1.0.5.1-reasm-fix
+tar -czf "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix-openwrt-embedded.tar.gz" -C "$OFFLINE_DIR/fake-z" zapret2-v1.0.5.1-reasm-fix
+bash "$REPO_DIR/tools/build-offline-archive.sh" \
+  --zator-tar "$DIST/zator-full.tar.gz" \
+  --zapret2 "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz" \
+  --zapret2-openwrt "$OFFLINE_DIR/zapret2-v1.0.5.1-reasm-fix-openwrt-embedded.tar.gz" \
+  --version 1.0.5.1-reasm-fix \
+  --project-dir "$REPO_DIR" \
+  --output "$OFFLINE_DIR/zator-offline-test.tar.gz" >/dev/null || fail "сборка офлайн-бандла упала"
+tar -tzf "$OFFLINE_DIR/zator-offline-test.tar.gz" | grep -q 'zator-full.tar.gz' || fail "в бандле нет zator-full.tar.gz"
+tar -tzf "$OFFLINE_DIR/zator-offline-test.tar.gz" | grep -q 'README.txt' || fail "в бандле нет README.txt"
+rm -rf "$OFFLINE_DIR/run" "$OFFLINE_DIR/optroot" "$OFFLINE_DIR/bin"
+mkdir -p "$OFFLINE_DIR/run" "$OFFLINE_DIR/bin"
+tar -xzf "$OFFLINE_DIR/zator-offline-test.tar.gz" -C "$OFFLINE_DIR/run"
+Z2R_INSTALL_DIR="$OFFLINE_DIR/optroot" Z2R_BIN_PATH="$OFFLINE_DIR/bin/z2r" Z2R_NO_EXEC=1 \
+  sh "$OFFLINE_DIR/run/zator-offline-1.0.5.1-reasm-fix/z2r" > "$OFFLINE_DIR/install.out" 2>&1 \
+  || fail "офлайн-установка упала"
+grep -q 'OFFLINE_READY version=1.0.5.1-reasm-fix' "$OFFLINE_DIR/install.out" || fail "нет OFFLINE_READY"
+[ -f "$OFFLINE_DIR/optroot/z2r.sh" ] || fail "офлайн: нет z2r.sh"
+[ -f "$OFFLINE_DIR/optroot/zator/z2r_lib/deploy.sh" ] || fail "офлайн: нет z2r_lib"
+[ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/config.default" ] || fail "офлайн: нет payload config.default"
+[ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/fake_files.tar.gz" ] || fail "офлайн: нет payload fake_files.tar.gz"
+[ -f "$OFFLINE_DIR/optroot/zator/.deploy-payload/Entware/z2r-strategy-validator" ] || fail "офлайн: нет payload validator"
+grep -q '^TRACKING="offline-1.0.5.1-reasm-fix"$' "$OFFLINE_DIR/optroot/zator/extra_strats/cache/deploy/version.env" || fail "офлайн: TRACKING не закреплён"
+grep -q '^AUTOUPDATE=off$' "$OFFLINE_DIR/optroot/z2r.conf" || fail "офлайн: AUTOUPDATE не выключен"
+[ -f "$OFFLINE_DIR/bin/z2r" ] || fail "офлайн: команда z2r не установлена"
+ok "офлайн-сборка: bundle, установка, пин версии, AUTOUPDATE=off"
+
 echo
 echo "deploy tar smoke ok"
