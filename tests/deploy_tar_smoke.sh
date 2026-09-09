@@ -161,6 +161,36 @@ grep -q SURVIVED "$WORK/hdr.out" || fail "deploy_menu_header роняет set -e
 grep -q 'PART=\[\]' "$WORK/hdr.out" || fail "шапка пишет про Web-панель без установленной панели"
 ok "deploy_menu_header безопасен под set -e и молчит про отсутствующую панель"
 
+# --- config_update_pending + уведомление «Есть новый конфиг» в шапке ---
+source "$REPO_DIR/lib/config.sh"
+grep -q 'config_update_pending' "$REPO_DIR/webui-src/src/api/types.ts" || fail "types.ts без config_update_pending"
+grep -q 'config_update_pending' "$REPO_DIR/webui-src/src/components/status/StatusCards.vue" || fail "StatusCards без config_update_pending"
+grep -q 'config_update_pending' "$REPO_DIR/webui/cgi-bin/_lib.sh" || fail "_lib.sh без config_update_pending"
+grep -q 'config_update_pending' "$REPO_DIR/webui/dev/fake_router_server.py" || fail "fake_router_server без config_update_pending"
+mkdir -p "$ZAPRET2_ROOT"
+printf '# Last modified: 2026-09-05 12:17:37 UTC\n' > "$ZAPRET2_ROOT/config"
+printf '# Last modified: 2026-09-05 12:17:37 UTC\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending && fail "pending при равных датах"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending || fail "pending не сработал при новом эталоне"
+printf '# Last modified: 2026-09-04 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending && fail "pending при эталоне старее живого конфига"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\r\n' > "$ZAPRET2_ROOT/config.default"
+config_update_pending || fail "pending не работает с CRLF-заголовком"
+mv "$ZAPRET2_ROOT/config.default" "$ZAPRET2_ROOT/config.default.bak"
+config_update_pending && fail "pending без config.default"
+mv "$ZAPRET2_ROOT/config.default.bak" "$ZAPRET2_ROOT/config.default"
+printf 'нет заголовка\n' > "$ZAPRET2_ROOT/config"
+config_update_pending && fail "pending без заголовка в живом конфиге"
+printf '# Last modified: 2026-09-05 12:17:37 UTC\n' > "$ZAPRET2_ROOT/config"
+deploy_menu_header >/dev/null 2>&1
+case "$MENU_DEPLOY_NOTICE" in *"Есть новый конфиг от 2026-09-06. Для применения: п.5 -> п.7"*) ;; *) fail "шапка без уведомления о новом конфиге" ;; esac
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+deploy_menu_header >/dev/null 2>&1
+case "$MENU_DEPLOY_NOTICE" in *"Есть новый конфиг"*) fail "шапка показывает уведомление при применённом конфиге" ;; esac
+rm -f "$ZAPRET2_ROOT/config" "$ZAPRET2_ROOT/config.default"
+ok "config_update_pending и уведомление шапки"
+
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"

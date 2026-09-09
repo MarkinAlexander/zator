@@ -161,6 +161,9 @@ export interface VersionInfo {
   update_available: boolean
   latest_zator_date: string
   latest_webui_date: string
+  config_date: string
+  config_default_date: string
+  config_update_pending: boolean
 }
 
 export interface StatePayload {

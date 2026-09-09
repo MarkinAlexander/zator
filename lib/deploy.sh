@@ -763,6 +763,13 @@ deploy_menu_header() {
     MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
 "
   fi
+  if type config_update_pending >/dev/null 2>&1 && config_update_pending; then
+    local cfg_date
+    cfg_date="$(config_default_last_modified)"
+    cfg_date="${cfg_date%% *}"
+    MENU_DEPLOY_NOTICE="${MENU_DEPLOY_NOTICE}${red}⬆ Есть новый конфиг от ${cfg_date}. Для применения: п.5 -> п.7${yellow}
+"
+  fi
   return 0
 }
 
