@@ -2086,6 +2086,11 @@ get_menu() {
     local _cfg_file
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
+    if type platform_summary_text >/dev/null 2>&1; then
+      MENU_PLATFORM="$(platform_summary_text)"
+    else
+      MENU_PLATFORM="неизвестно"
+    fi
     MENU_ZATOR_DATE="неизвестно"
     MENU_WEBUI_DATE="неизвестно"
     MENU_DEPLOY_NOTICE=""
@@ -2129,6 +2134,7 @@ ${plain}
 ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
+Платформа: ${plain}${MENU_PLATFORM}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
 zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
 ${MENU_ZAPRET2_LINE}${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
