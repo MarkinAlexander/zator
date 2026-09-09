@@ -475,8 +475,7 @@ deploy_apply_newdir() {
 # Для url: variant обязателен, tag = latest или номер релиза (пишется в TRACKING).
 # Применяет config.default из payload релиза: эталон копируется в
 # $ZAPRET2_ROOT, затем переносится на живой config (локи, client-scope,
-# WAN кинетика) с рестартом zapret2 — пользователь получает новые
-# стратегии из релиза. Пользовательские листы не трогаются.
+# WAN кинетика) с рестартом zapret2. Пользовательские листы не трогаются.
 # Без живого config (свежая установка) — только эталон, установочный
 # поток z2r.sh соберёт config сам.
 deploy_apply_config_default() {
@@ -488,6 +487,13 @@ deploy_apply_config_default() {
     echo -e "${yellow}config.default обновлён (эталон); живой config появится при установке zapret2.${plain}"
     return 0
   fi
+  deploy_apply_config_to_live
+}
+
+# Бэкап-промпт -> stop -> config_apply_from_default -> восстановление/рестарт.
+# Рестарт при созданном бэкапе делает backup_update_offer_restore (сценарий А).
+deploy_apply_config_to_live() {
+  local root="${ZAPRET2_ROOT:-/opt/zapret2}"
   if ! type config_apply_from_default >/dev/null 2>&1; then
     # standalone-запуск лаунчера: применит меню z2r (п.5 -> п.7)
     echo -e "${yellow}config.default обновлён; примените его к живому конфигу: меню п.5 -> п.7.${plain}"
@@ -513,6 +519,39 @@ deploy_apply_config_default() {
     echo -e "${green}Живой config обновлён из config.default, zapret2 перезапущен.${plain}"
   fi
   return 0
+}
+
+# Лёгкий путь п.7: применить уже установленный config.default без сети.
+# После применения эталон копируется в payload — офлайн-источник на будущее.
+deploy_apply_installed_config() {
+  local root="${ZAPRET2_ROOT:-/opt/zapret2}"
+  local src=""
+  if [ -f "$root/config.default" ]; then
+    src="$root/config.default"
+  elif [ -f "$DEPLOY_PAYLOAD_DIR/config.default" ]; then
+    src="$DEPLOY_PAYLOAD_DIR/config.default"
+  else
+    echo -e "${red}Локальный config.default не найден. Обновитесь из релиза (п.2) или локального архива (п.5).${plain}"
+    return 1
+  fi
+  if [ ! -f "$root/config" ]; then
+    echo -e "${yellow}Живой config отсутствует: появится при установке zapret2.${plain}"
+    return 0
+  fi
+  if type config_update_pending >/dev/null 2>&1; then
+    config_update_pending
+    [ "$?" = 1 ] && {
+      echo -e "${green}Живой конфиг уже применён из актуального config.default.${plain}"
+      return 0
+    }
+  fi
+  if [ "$src" != "$root/config.default" ]; then
+    mkdir -p "$root"
+    cp -f "$src" "$root/config.default" || return 1
+  fi
+  deploy_apply_config_to_live || return 1
+  mkdir -p "$DEPLOY_PAYLOAD_DIR"
+  cp -f "$root/config.default" "$DEPLOY_PAYLOAD_DIR/config.default" 2>/dev/null || true
 }
 
 deploy_from_tar() {
@@ -908,7 +947,7 @@ $i. $tar_file"
   done
 }
 
-# Механизм перехода п.7: как обновлять стратегии/lua/листы.
+# Механизм перехода п.7: как обновлять конфиг/стратегии/lua/листы.
 deploy_transition_menu() {
   local answer
   while true; do
@@ -916,27 +955,19 @@ deploy_transition_menu() {
     echo -e "${Fcyan}===== Обновление конфига, стратегий, lua и листов =====${plain}"
     echo -e "${yellow}Пользовательские файлы (netrogat.txt, TCP_Custom.txt, substrings-листы, custom_tls.bin) не перезаписываются молча.${plain}"
     echo ""
-    submenu_item 1 "Обновить, не трогая пользовательские файлы (рекомендуется)"
-    submenu_item 2 "То же, но сначала создать бэкап"
+    submenu_item 1 "Применить установленный config.default (без скачивания)"
+    submenu_item 2 "Перекачать релиз и применить (обновит и листы, lua)"
     submenu_item 3 "Полный сброс листов и config до эталона (прежнее поведение п.5)"
     submenu_item 0 "Назад"
     echo ""
     read -re -p "" answer
     case "$answer" in
       1)
-        deploy_from_tar "$(deploy_releases_base)/latest/zator-$(deploy_pick_variant).tar.gz" "$(deploy_pick_variant)" "" || true
+        deploy_apply_installed_config || true
         pause_enter
         ;;
       2)
-        if type backup_helper_ask_and_create >/dev/null 2>&1; then
-          backup_helper_ask_and_create
-          deploy_from_tar "$(deploy_releases_base)/latest/zator-$(deploy_pick_variant).tar.gz" "$(deploy_pick_variant)" "" || true
-          if type backup_update_offer_restore >/dev/null 2>&1; then
-            backup_update_offer_restore || true
-          fi
-        else
-          echo -e "${red}Бэкап-хелпер недоступен вне меню z2r.${plain}"
-        fi
+        deploy_from_tar "$(deploy_releases_base)/latest/zator-$(deploy_pick_variant).tar.gz" "$(deploy_pick_variant)" "" || true
         pause_enter
         ;;
       3)

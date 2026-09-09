@@ -229,6 +229,32 @@ grep -q '^restart$' "$RESTART_MARK" || fail "нет restart после прим�
 ok "payload config.default применяется к живому конфигу (stop -> apply -> restart)"
 unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
 
+# --- 4c. лёгкий путь п.7: применить установленный config.default без сети ---
+APPLY2_MARK="$WORK/apply2.mark"
+config_apply_from_default() { echo applied >> "$APPLY2_MARK"; }
+z2r_service_action() { :; }
+backup_helper_ask_and_create() { BACKUP_HELPER_CREATED=0; return 0; }
+rm -f "$ZAPRET2_ROOT/config" "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.default"
+deploy_apply_installed_config >/dev/null 2>&1 && fail "лёгкий путь без эталона должен вернуть ошибку"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZATOR_ROOT/.deploy-payload/config.default"
+printf '# Last modified: 2026-09-05 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+rm -f "$APPLY2_MARK"
+deploy_apply_installed_config >/dev/null 2>&1 || fail "лёгкий путь из payload упал"
+[ -s "$APPLY2_MARK" ] || fail "лёгкий путь не вызвал config_apply_from_default"
+[ -f "$ZAPRET2_ROOT/config.default" ] || fail "эталон не скопирован из payload в корень zapret2"
+cmp -s "$ZAPRET2_ROOT/config.default" "$ZATOR_ROOT/.deploy-payload/config.default" || fail "payload рассинхронизирован после применения"
+printf '# Last modified: 2026-09-06 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+rm -f "$APPLY2_MARK"
+deploy_apply_installed_config >/dev/null 2>&1 || fail "лёгкий путь при равных датах упал"
+[ -s "$APPLY2_MARK" ] && fail "лёгкий путь применил конфиг при равных датах"
+rm -f "$ZAPRET2_ROOT/config"
+rm -f "$APPLY2_MARK"
+deploy_apply_installed_config >/dev/null 2>&1 || fail "лёгкий путь без живого конфига упал"
+[ -s "$APPLY2_MARK" ] && fail "лёгкий путь применил конфиг без живого config"
+printf '# Last modified: 2026-09-05 00:00:00 UTC\n' > "$ZAPRET2_ROOT/config"
+unset -f config_apply_from_default z2r_service_action backup_helper_ask_and_create
+ok "лёгкий путь п.7: применение без скачивания и self-heal payload"
+
 # --- 5. обновление webui-вариантом: слияние version.env ---
 
 # подменяем даты в текущем version.env, чтобы увидеть слияние полей

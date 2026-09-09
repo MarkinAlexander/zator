@@ -517,12 +517,13 @@ config_default_last_modified() {
 # Живой config — копия эталона, даты «# Last modified» у них равны сразу
 # после применения; sed-правки меню заголовок не трогают. Расхождение дат
 # означает, что config.default новее и не применён.
+# rc=0 — эталон новее, 1 — даты равны/эталон старее, 2 — не определить.
 config_update_pending() {
   local live ref
   live="$(sed -n 's/^# Last modified:[[:space:]]*//p' "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null | head -n1 | tr -d '\r')"
   ref="$(sed -n 's/^# Last modified:[[:space:]]*//p' "${ZAPRET2_ROOT:-/opt/zapret2}/config.default" 2>/dev/null | head -n1 | tr -d '\r')"
-  case "$live" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 1 ;; esac
-  case "$ref" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 1 ;; esac
+  case "$live" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 2 ;; esac
+  case "$ref" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 2 ;; esac
   [ "$ref" \> "$live" ]
 }
 
