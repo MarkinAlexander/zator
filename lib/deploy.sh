@@ -538,7 +538,15 @@ deploy_apply_config_default() {
 deploy_apply_config_to_live() {
   local root="${ZAPRET2_ROOT:-/opt/zapret2}"
   if ! type config_apply_from_default >/dev/null 2>&1; then
-    # standalone-запуск лаунчера: применит меню z2r (п.5 -> п.7)
+    # standalone-запуск лаунчера: применит меню z2r (п.5 -> п.7).
+    # Подсказка нужна только когда эталон новее живого конфига, иначе
+    # каждый деплой зря кричит о «новом конфиге».
+    if ! type config_update_pending >/dev/null 2>&1 && [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ]; then
+      . "$ZATOR_ROOT/z2r_lib/config.sh" 2>/dev/null || true
+    fi
+    if type config_update_pending >/dev/null 2>&1; then
+      config_update_pending || return 0
+    fi
     echo -e "${yellow}config.default обновлён; примените его к живому конфигу: меню п.5 -> п.7.${plain}"
     return 0
   fi
