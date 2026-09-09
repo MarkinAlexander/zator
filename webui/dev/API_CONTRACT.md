@@ -167,8 +167,8 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
   "latest_zator_date": "",       // даты доступного обновления (пусто — проверки не было)
   "latest_webui_date": "",
   "config_date": "2026-09-01 12:00:37 UTC",       // дата «# Last modified» живого config
-  "config_default_date": "2026-09-01 12:00:37 UTC", // дата эталонного config.default
-  "config_update_pending": false   // true — config.default новее живого config (применение: CLI п.5 -> п.7)
+  "config_default_date": "2026-09-05 08:00:00 UTC", // дата эталонного config.default
+  "config_update_pending": true    // true — config.default новее живого config (применение: CLI п.5 -> п.7)
 }
 ```
 

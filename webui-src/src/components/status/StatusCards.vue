@@ -61,6 +61,9 @@ const cards = computed<CardDef[]>(() => {
   if (ver?.zapret2_version) z2Parts.push(ver.zapret2_version)
   if (ver?.config_date && ver.config_date !== 'Неизвестно') {
     z2Parts.push(`config от ${ver.config_date.slice(0, 10)}`)
+    if (ver.config_update_pending && ver.config_default_date) {
+      z2Parts.push(`есть новая версия от ${ver.config_default_date.slice(0, 10)}`)
+    }
   }
 
   return [
