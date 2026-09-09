@@ -809,7 +809,8 @@ ports_apply_add() {
   ports_split "$line" "$anchor"
   new_user="$_PORTS_USER"
 
-  input="$(printf '%s' "$input" | tr -d '[:space:]')"
+  # busybox tr не везде знает класс [:space:] и тогда удаляет буквы a,c,e,p,s
+  input="$(printf '%s' "$input" | tr -d ' \t\r\n')"
   [ -n "$input" ] && IFS=',' read -ra arr <<< "$input"
 
   for tok in "${arr[@]}"; do

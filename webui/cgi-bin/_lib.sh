@@ -1350,7 +1350,7 @@ api_provider_set() {
   name="${name//|/}"
   city="${city//$'\n'/}"
   city="${city//|/}"
-  [ -n "$(printf '%s' "$name" | tr -d '[:space:]')" ] || send_error "400 Bad Request" "Укажите название провайдера"
+  [ -n "$(printf '%s' "$name" | tr -d ' \t\r\n')" ] || send_error "400 Bad Request" "Укажите название провайдера"
   if ! type provider_set_manual >/dev/null 2>&1; then
     send_error "500 Internal Server Error" "Модуль провайдера недоступен"
   fi
