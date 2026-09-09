@@ -242,6 +242,45 @@ unset ZAPRET2_ARCHIVE_DIR ZAPRET2_VERSION
 unset -f zapret2_flavor_save
 ok "п.6: локальный архив zapret2, парсер, флэвор, отмена"
 
+# --- харденинг: отказ на небезопасных tar и манифестах ---
+EVIL_DIR="$WORK/evil"
+mkdir -p "$EVIL_DIR/deep"
+printf 'x' > "$EVIL_DIR/deep/plain"
+GOOD_TAR="$EVIL_DIR/good.tar.gz"
+tar -czf "$GOOD_TAR" -C "$EVIL_DIR/deep" plain
+deploy_tar_paths_ok "$GOOD_TAR" || fail "валидатор отклонил чистый tar"
+# GNU tar срезает ../ при создании, поэтому скармливаем листинг моком tar
+MOCK_TAR="$WORK/mockbin/tar"
+mkdir -p "$WORK/mockbin"
+Z2R_EVIL_TAR="$GOOD_TAR"
+export Z2R_EVIL_TAR
+cat > "$MOCK_TAR" <<'MOCKEOF'
+#!/bin/sh
+if [ "$1" = "-tzf" ] && [ "$2" = "$Z2R_EVIL_TAR" ]; then
+  printf '%s\n' '../evil' 'plain'
+  exit 0
+fi
+exec /usr/bin/tar "$@"
+MOCKEOF
+chmod +x "$MOCK_TAR"
+if PATH="$WORK/mockbin:$PATH" deploy_tar_paths_ok "$GOOD_TAR"; then
+  fail "валидатор пропустил tar с ../-членом"
+fi
+PATH="$WORK/mockbin:$PATH" deploy_from_tar "$GOOD_TAR" >/dev/null 2>&1 \
+  && fail "deploy_from_tar принял tar с ../-членом"
+unset Z2R_EVIL_TAR
+BAD_MAN_DIR="$WORK/badman"
+mkdir -p "$BAD_MAN_DIR/stage"
+printf 'x' > "$BAD_MAN_DIR/stage/file"
+mkdir -p "$BAD_MAN_DIR/stage/extra_strats/cache/deploy"
+printf 'file|/etc/cron.d/pwn|auto|%s|1|0\n' "$(file_sha256 "$BAD_MAN_DIR/stage/file")" \
+  > "$BAD_MAN_DIR/stage/extra_strats/cache/deploy/manifest.tsv"
+( cd "$REPO_DIR" && ZATOR_ROOT="$WORK/badman-target" bash -c '
+    source lib/deploy.sh >/dev/null 2>&1
+    deploy_apply_staging "'"$BAD_MAN_DIR"'/stage" latest' ) > "$BAD_MAN_DIR/out.txt" 2>&1
+grep -q '/etc/cron.d/pwn' "$BAD_MAN_DIR/out.txt" || fail "манифест с /etc dest не отклонён"
+ok "харденинг: tar с ../ и манифест с чужим dest отклоняются"
+
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"

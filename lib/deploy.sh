@@ -222,6 +222,15 @@ deploy_gzip_ok() {
   gzip -t "$1" 2>/dev/null || { echo -e "${red}Файл не является gzip-архивом (возможно, страница ошибки).${plain}"; return 1; }
 }
 
+# члены архива не должны выбираться за пределы каталога распаковки
+deploy_tar_paths_ok() {
+  tar -tzf "$1" 2>/dev/null | while IFS= read -r entry; do
+    case "$entry" in
+      /*|../*|*/../*|*/..) exit 1 ;;
+    esac
+  done
+}
+
 file_sha256() {
   sha256sum "$1" 2>/dev/null | awk '{print $1}'
 }
@@ -402,6 +411,18 @@ deploy_apply_staging() {
   local path dest cls sha size exec z2r_updated=0 webui_updated=0 kept=0 installed=0
   while IFS='|' read -r path dest cls sha size exec; do
     case "$path" in ''|'#'*) continue ;; esac
+    case "$path" in /*|../*|*/../*|*/..)
+      echo -e "${red}Недопустимый путь в манифесте: $path${plain}"
+      return 1
+      ;;
+    esac
+    case "$dest" in
+      /opt/zator/*|/opt/z2r.sh) ;;
+      *)
+        echo -e "${red}Недопустимый dest в манифесте: $dest${plain}"
+        return 1
+        ;;
+    esac
     dest="$(deploy_dest_for "$dest")"
     if [ "$cls" = "keep-if-exists" ] && [ -e "$dest" ]; then
       kept=$((kept + 1))
@@ -608,6 +629,10 @@ deploy_from_tar() {
   esac
 
   deploy_gzip_ok "$archive" || return 1
+  if ! deploy_tar_paths_ok "$archive"; then
+    echo -e "${red}Архив содержит небезопасные пути (выход за каталог распаковки).${plain}"
+    return 1
+  fi
 
   if [ -n "$url" ]; then
     eval "unpacked_bytes=\"\${DEPLOY_META_ASSET_${variant^^}_UNPACKED:-}\""
@@ -661,6 +686,14 @@ deploy_integrity_check() {
     [ -f "$m" ] || continue
     while IFS='|' read -r path dest cls sha size exec; do
       case "$path" in ''|'#'*) continue ;; esac
+      case "$dest" in
+        /opt/zator/*|/opt/z2r.sh) ;;
+        *)
+          echo -e "${red}недопустимый dest в манифесте: $dest${plain}"
+          missing=$((missing + 1))
+          continue
+          ;;
+      esac
       dest="$(deploy_dest_for "$dest")"
       total=$((total + 1))
       if [ ! -f "$dest" ]; then
@@ -808,6 +841,10 @@ deploy_reset_user_files() {
     deploy_download_archive "$source" "$tag" "$variant" || return 1
   fi
   deploy_gzip_ok "$source" || return 1
+  if ! deploy_tar_paths_ok "$source"; then
+    echo -e "${red}Архив содержит небезопасные пути.${plain}"
+    return 1
+  fi
   if ! deploy_unpack "$source" "$staging"; then
     echo -e "${red}Не удалось распаковать архив.${plain}"
     return 1
@@ -818,6 +855,18 @@ deploy_reset_user_files() {
   while IFS='|' read -r path dest cls sha size exec; do
     case "$path" in ''|'#'*) continue ;; esac
     [ "$cls" = "keep-if-exists" ] || continue
+    case "$path" in /*|../*|*/../*|*/..)
+      echo -e "${red}Недопустимый путь в манифесте: $path${plain}"
+      return 1
+      ;;
+    esac
+    case "$dest" in
+      /opt/zator/*|/opt/z2r.sh) ;;
+      *)
+        echo -e "${red}Недопустимый dest в манифесте: $dest${plain}"
+        return 1
+        ;;
+    esac
     dest="$(deploy_dest_for "$dest")"
     if [ -f "$dest" ] && [ "$(file_sha256 "$dest")" != "$sha" ]; then
       idx=$((idx + 1))
@@ -900,8 +949,13 @@ deploy_menu_header() {
     what="${what}Web-панель от $(deploy_latest_field LATEST_WEBUI_DATE)"
   fi
   if [ -n "$what" ]; then
-    MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
+    if [ "$MENU_DEPLOY_TRACKING" != "latest" ]; then
+      MENU_DEPLOY_NOTICE="${yellow}Закреплена версия ${plain}${MENU_DEPLOY_TRACKING}${yellow}, доступен latest: ${plain}${what}${yellow} (п.2 снимет закрепление)
 "
+    else
+      MENU_DEPLOY_NOTICE="${red}⬆ Доступно обновление: ${what} — п.5${yellow}
+"
+    fi
   fi
   if type config_update_pending >/dev/null 2>&1 && config_update_pending; then
     local cfg_date
@@ -924,7 +978,7 @@ deploy_update_menu() {
     echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}${MENU_DEPLOY_SOURCE}"
     echo ""
     submenu_item 1 "Проверить обновления (даты zator/webui: локально vs сервер)"
-    submenu_item 2 "Обновить zator (код, конфиг, листы, lua; панель не трогается)"
+    submenu_item 2 "Обновить zator (код, листы, lua; конфиг применится к живому, рестарт zapret2)"
     submenu_item 3 "Обновить только Web-панель"
     submenu_item 4 "Выбрать номерной релиз (список с датами; установка закрепляет версию)"
     submenu_item 5 "Установить из локального tar.gz (по умолчанию ищется в /tmp)"
@@ -948,6 +1002,15 @@ deploy_update_menu() {
         fi
         variant="$(deploy_pick_variant)"
         if [ "$DEPLOY_UPDATE_ZATOR" = "1" ]; then
+          if [ "$(deploy_version_field TRACKING)" != "latest" ]; then
+            echo -e "${yellow}Закреплена версия $(deploy_version_field TRACKING); обновление до latest снимет закрепление.${plain}"
+            read -re -p "1 - продолжить, 0 - отмена: " pin_answer
+            if [ "$pin_answer" != "1" ]; then
+              echo -e "${yellow}Отменено.${plain}"
+              pause_enter
+              continue
+            fi
+          fi
           deploy_from_tar "$(deploy_releases_base)/latest/zator-${variant}.tar.gz" "$variant" latest || true
         elif [ "$DEPLOY_UPDATE_WEBUI" = "1" ]; then
           echo -e "${green}Ядро zator актуально, есть обновление Web-панели — п.3.${plain}"
@@ -993,7 +1056,7 @@ deploy_update_menu() {
       5)
         i=1
         found=""
-        for tar_file in /tmp/zator-*.tar.gz /tmp/*.tar.gz; do
+        for tar_file in /tmp/*.tar.gz; do
           [ -f "$tar_file" ] || continue
           found="$found
 $i. $tar_file"
