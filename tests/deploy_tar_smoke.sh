@@ -191,6 +191,21 @@ case "$MENU_DEPLOY_NOTICE" in *"Есть новый конфиг"*) fail "шап
 rm -f "$ZAPRET2_ROOT/config" "$ZAPRET2_ROOT/config.default"
 ok "config_update_pending и уведомление шапки"
 
+# --- зеркало релизов: резолв sources.env и приоритет env ---
+grep -q 'deploy_sources_menu' "$REPO_DIR/lib/deploy.sh" || fail "нет подменю источников"
+grep -q 'submenu_item 10' "$REPO_DIR/lib/deploy.sh" || fail "нет п.10 в меню 5"
+mkdir -p "$ZATOR_ROOT/extra_strats/cache/deploy"
+printf 'RELEASES_MIRROR="https://mirror.example.com/zator"\n' > "$(deploy_sources_file)"
+[ "$(deploy_releases_base)" = "https://mirror.example.com/zator" ] || fail "deploy_releases_base не читает зеркало из sources.env"
+deploy_menu_header >/dev/null 2>&1
+case "$MENU_DEPLOY_SOURCE" in *"зеркало mirror.example.com"*) ;; *) fail "шапка не показывает источник-зеркало" ;; esac
+( export Z2R_RELEASES_BASE="https://env.example.com/dl"
+  [ "$(deploy_releases_base)" = "https://env.example.com/dl" ] ) \
+  || fail "env Z2R_RELEASES_BASE не приоритетнее sources.env"
+rm -f "$(deploy_sources_file)"
+case "$(deploy_releases_base)" in https://github.com/*) ;; *) fail "сброс не вернул GitHub-источник" ;; esac
+ok "зеркало релизов: резолв, приоритет env, сброс"
+
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"

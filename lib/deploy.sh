@@ -51,9 +51,19 @@ if ! command -v z2r_fetch_url_to_file >/dev/null 2>&1; then
   }
 fi
 
+deploy_sources_file() {
+  printf '%s/extra_strats/cache/deploy/sources.env' "${ZATOR_ROOT:-/opt/zator}"
+}
+
 deploy_releases_base() {
   if [ -n "${Z2R_RELEASES_BASE:-}" ]; then
     printf '%s' "$Z2R_RELEASES_BASE"
+    return 0
+  fi
+  local mirror
+  mirror="$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)"
+  if [ -n "$mirror" ]; then
+    printf '%s' "$mirror"
     return 0
   fi
   local base="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/zator}"
@@ -127,6 +137,9 @@ deploy_check_latest() {
   DEPLOY_UPDATE_WEBUI=0
   if ! deploy_fetch_release_meta latest; then
     echo -e "${yellow}Не достучались до сервера обновлений.${plain}"
+    if [ -n "$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)" ]; then
+      echo -e "${yellow}Проверьте зеркало или сбросьте источник: п.5 -> п.10.${plain}"
+    fi
     return 1
   fi
   mkdir -p "$DEPLOY_CACHE_DIR"
@@ -786,6 +799,12 @@ deploy_menu_header() {
     MENU_WEBUI_PART=", Web-панель от: ${plain}${MENU_WEBUI_DATE}${yellow}"
   fi
   MENU_DEPLOY_NOTICE=""
+  MENU_DEPLOY_SOURCE=""
+  local mirror
+  mirror="$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)"
+  if [ -n "$mirror" ]; then
+    MENU_DEPLOY_SOURCE=", источник: ${plain}зеркало $(printf '%s' "$mirror" | sed 's#^[a-z]*://##; s#/.*##')${yellow}"
+  fi
   local zsha wsha lz lw
   zsha="$(deploy_version_field ZATOR_SHA)"
   wsha="$(deploy_version_field WEBUI_SHA)"
@@ -819,7 +838,7 @@ deploy_update_menu() {
     clear -x
     echo -e "${Fcyan}============ Обновление zator и zapret2 ============${plain}"
     deploy_menu_header
-    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}"
+    echo -e "zator от: ${green}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}, режим: ${plain}${MENU_DEPLOY_TRACKING}${yellow}${MENU_DEPLOY_SOURCE}"
     echo ""
     submenu_item 1 "Проверить обновления (даты zator/webui: локально vs сервер)"
     submenu_item 2 "Обновить zator (код, конфиг, листы, lua; панель не трогается)"
@@ -830,6 +849,7 @@ deploy_update_menu() {
     submenu_item 7 "Обновить конфиг, стратегии, lua и листы"
     submenu_item 8 "Сбросить пользовательские файлы к эталону (netrogat и др.)"
     submenu_item 9 "Проверить целостность установки"
+    submenu_item 10 "Источник обновлений (зеркало или стандартный GitHub)"
     submenu_item 0 "Назад в главное меню"
     echo ""
     read -re -p "" answer
@@ -935,6 +955,64 @@ $i. $tar_file"
         ;;
       9)
         deploy_integrity_check || true
+        pause_enter
+        ;;
+      10)
+        deploy_sources_menu
+        ;;
+      0|"")
+        return 0
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
+deploy_sources_menu() {
+  local answer url mirror
+  while true; do
+    clear -x
+    echo -e "${Fcyan}===== Источник обновлений =====${plain}"
+    mirror="$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)"
+    if [ -n "$mirror" ]; then
+      echo -e "Сейчас: ${green}зеркало ${plain}${mirror}${yellow}"
+    else
+      echo -e "Сейчас: ${green}стандартный (GitHub)${plain}"
+    fi
+    echo -e "${yellow}Зеркало — ваш сервер с тем же лэйаутом релизов: <base>/latest/latest.json и <base>/<тег>/zator-<вариант>.tar.gz${plain}"
+    echo ""
+    submenu_item 1 "Указать зеркало (URL)"
+    submenu_item 2 "Сбросить на стандартный (GitHub)"
+    submenu_item 0 "Назад"
+    echo ""
+    read -re -p "" answer
+    case "$answer" in
+      1)
+        read -re -p "Базовый URL зеркала (0 - отмена): " url
+        case "$url" in
+          0|"") ;;
+          http://*|https://*)
+            if printf '%s' "$url" | grep -q '[^A-Za-z0-9:/.?&=%~_-]'; then
+              echo -e "${red}URL содержит недопустимые символы.${plain}"
+            else
+              url="${url%/}"
+              mkdir -p "$DEPLOY_CACHE_DIR"
+              printf 'RELEASES_MIRROR="%s"\n' "$url" > "$(deploy_sources_file)"
+              echo -e "${green}Зеркало сохранено: $url${plain}"
+              deploy_check_latest || true
+            fi
+            ;;
+          *)
+            echo -e "${red}URL должен начинаться с http:// или https://${plain}"
+            ;;
+        esac
+        pause_enter
+        ;;
+      2)
+        rm -f "$(deploy_sources_file)"
+        echo -e "${green}Сброшено на стандартный источник (GitHub).${plain}"
         pause_enter
         ;;
       0|"")
