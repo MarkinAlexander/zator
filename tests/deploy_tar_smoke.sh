@@ -206,6 +206,42 @@ rm -f "$(deploy_sources_file)"
 case "$(deploy_releases_base)" in https://github.com/*) ;; *) fail "сброс не вернул GitHub-источник" ;; esac
 ok "зеркало релизов: резолв, приоритет env, сброс"
 
+# --- п.6: локальный архив zapret2 ---
+[ "$(deploy_parse_zapret2_tarball_name /x/y/zapret2-v1.0.5.1.tar.gz)" = "1.0.5.1" ] || fail "парсер: обычная версия"
+[ "$(deploy_parse_zapret2_tarball_name zapret2-v1.0.5.1-reasm-fix.tar.gz)" = "1.0.5.1-reasm-fix" ] || fail "парсер: суффикс форка"
+[ "$(deploy_parse_zapret2_tarball_name zapret2-v1.0.5.1-openwrt-embedded.tar.gz)" = "1.0.5.1" ] || fail "парсер: openwrt-embedded"
+deploy_parse_zapret2_tarball_name zapret2-v.tar.gz >/dev/null 2>&1 && fail "парсер принял пустую версию"
+deploy_parse_zapret2_tarball_name zator-full.tar.gz >/dev/null 2>&1 && fail "парсер принял чужой архив"
+Z2R_TMP_DIR="$WORK/z2rtmp"
+FLAVOR_MARK="$WORK/flavor.mark"
+zapret2_flavor_save() { echo "$1" >> "$FLAVOR_MARK"; }
+
+rm -rf "$Z2R_TMP_DIR"; mkdir -p "$Z2R_TMP_DIR"; rm -f "$FLAVOR_MARK"
+printf 'gz' > "$Z2R_TMP_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz"
+deploy_local_zapret2_pick <<< "1" >/dev/null 2>&1 || fail "выбор локального архива упал"
+[ "$ZAPRET2_VERSION" = "1.0.5.1-reasm-fix" ] || fail "ZAPRET2_VERSION из имени архива"
+[ "$ZAPRET2_ARCHIVE_DIR" = "$Z2R_TMP_DIR/z2r_local_zapret2" ] || fail "ZAPRET2_ARCHIVE_DIR не подготовлен"
+[ -f "$ZAPRET2_ARCHIVE_DIR/zapret2-v1.0.5.1-reasm-fix.tar.gz" ] || fail "нет канонического имени архива"
+grep -q '^fork$' "$FLAVOR_MARK" || fail "суффикс версии не закрепил флэвор fork"
+[ "$DEPLOY_WANT_REINSTALL" = 1 ] || fail "локальный архив не запросил переустановку"
+DEPLOY_WANT_REINSTALL=0
+
+rm -rf "$Z2R_TMP_DIR"; mkdir -p "$Z2R_TMP_DIR"; rm -f "$FLAVOR_MARK"
+printf 'gz' > "$Z2R_TMP_DIR/zapret2-v1.0.5.tar.gz"
+printf 'gz' > "$Z2R_TMP_DIR/zapret2-v1.0.5-openwrt-embedded.tar.gz"
+deploy_local_zapret2_pick <<< "2" >/dev/null 2>&1 || fail "выбор без суффикса упал"
+[ "$ZAPRET2_VERSION" = "1.0.5" ] || fail "версия без суффикса не распознана"
+[ -f "$ZAPRET2_ARCHIVE_DIR/zapret2-v1.0.5.tar.gz" ] || fail "нет канонического имени (standard)"
+[ -f "$ZAPRET2_ARCHIVE_DIR/zapret2-v1.0.5-openwrt-embedded.tar.gz" ] || fail "openwrt-вариант не подтянут рядом"
+[ -s "$FLAVOR_MARK" ] && fail "версия без суффикса сменила флэвор"
+DEPLOY_WANT_REINSTALL=0
+
+deploy_local_zapret2_pick <<< "0" >/dev/null 2>&1 || fail "отмена упала"
+[ "$DEPLOY_WANT_REINSTALL" = 0 ] || fail "отмена не отменила переустановку"
+unset ZAPRET2_ARCHIVE_DIR ZAPRET2_VERSION
+unset -f zapret2_flavor_save
+ok "п.6: локальный архив zapret2, парсер, флэвор, отмена"
+
 deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 || fail "deploy_from_tar (A) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "z2r_lib не установлен"
 [ -f "$Z2R_SCRIPT_DEST" ] || fail "_root/z2r.sh не установлен в Z2R_SCRIPT_DEST"

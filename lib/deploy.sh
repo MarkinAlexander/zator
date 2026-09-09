@@ -51,6 +51,15 @@ if ! command -v z2r_fetch_url_to_file >/dev/null 2>&1; then
   }
 fi
 
+if ! command -v ui_is_number_in_range >/dev/null 2>&1; then
+  ui_is_number_in_range() {
+    case "$2" in ''|*[!0-9]*) return 1 ;; esac
+    case "$3" in ''|*[!0-9]*) return 1 ;; esac
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+  }
+fi
+
 deploy_sources_file() {
   printf '%s/extra_strats/cache/deploy/sources.env' "${ZATOR_ROOT:-/opt/zator}"
 }
@@ -677,6 +686,79 @@ deploy_pick_variant() {
   if [ -e "$ZATOR_ROOT/webui/run-webui.sh" ]; then printf full; else printf core; fi
 }
 
+deploy_parse_zapret2_tarball_name() {
+  local name="${1##*/}"
+  case "$name" in
+    zapret2-v*-openwrt-embedded.tar.gz)
+      name="${name#zapret2-v}"
+      name="${name%-openwrt-embedded.tar.gz}"
+      ;;
+    zapret2-v*.tar.gz)
+      name="${name#zapret2-v}"
+      name="${name%.tar.gz}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  [ -n "$name" ] || return 1
+  printf '%s' "$name"
+}
+
+# Локальный архив zapret2 из /tmp: каноническое имя для ZAPRET2_ARCHIVE_DIR,
+# версия из имени файла, суффикс сборки закрепляет флэвор fork.
+deploy_local_zapret2_pick() {
+  local tar_file ver canon other i=1 found="" pick
+  local scan_dir="${Z2R_TMP_DIR:-/tmp}"
+  local dir="$scan_dir/z2r_local_zapret2"
+  for tar_file in "$scan_dir"/*.tar.gz; do
+    [ -f "$tar_file" ] || continue
+    deploy_parse_zapret2_tarball_name "$tar_file" >/dev/null 2>&1 || continue
+    found="$found
+$i. ${tar_file##*/}"
+    eval "DEPLOY_LOCAL_Z2_$i=\"\$tar_file\""
+    i=$((i + 1))
+  done
+  if [ -z "$found" ]; then
+    echo -e "${yellow}В ${scan_dir} нет архивов zapret2-v<версия>.tar.gz. Положите архив туда и повторите.${plain}"
+    return 1
+  fi
+  echo -e "${yellow}Архивы zapret2:${plain}$found"
+  read -re -p "Номер архива (0 - отмена): " pick
+  if [ "$pick" = "0" ] || ! ui_is_number_in_range "$pick" 1 $((i - 1)); then
+    echo -e "${yellow}Отменено.${plain}"
+    return 0
+  fi
+  eval "tar_file=\"\$DEPLOY_LOCAL_Z2_$pick\""
+  ver="$(deploy_parse_zapret2_tarball_name "$tar_file")" || return 1
+  printf '%s' "$ver" | grep -Eq '^[0-9]+(\.[0-9]+)*(-[A-Za-z0-9.-]+)?$' || {
+    echo -e "${red}Некорректная версия в имени архива: $ver${plain}"
+    return 1
+  }
+  case "$ver" in
+    *-*)
+      if type zapret2_flavor_save >/dev/null 2>&1; then
+        zapret2_flavor_save fork
+        echo -e "${yellow}Сборка закреплена: форк (суффикс $ver).${plain}"
+      fi
+      ;;
+  esac
+  case "${tar_file##*/}" in
+    *-openwrt-embedded.tar.gz) canon="zapret2-v${ver}-openwrt-embedded.tar.gz"; other="$scan_dir/zapret2-v${ver}.tar.gz" ;;
+    *) canon="zapret2-v${ver}.tar.gz"; other="$scan_dir/zapret2-v${ver}-openwrt-embedded.tar.gz" ;;
+  esac
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  cp -f "$tar_file" "$dir/$canon" || { echo -e "${red}Не удалось подготовить архив.${plain}"; return 1; }
+  [ -f "$other" ] && cp -f "$other" "$dir/" 2>/dev/null
+  export ZAPRET2_ARCHIVE_DIR="$dir"
+  export ZAPRET2_VERSION="$ver"
+  echo -e "${green}zapret2 ${ver} будет установлен из локального архива.${plain}"
+  echo -e "${yellow}Начинается переустановка zapret2: сначала предложат бэкап.${plain}"
+  DEPLOY_WANT_REINSTALL=1
+  return 0
+}
+
 deploy_list_releases() {
   local tmp="/tmp/z2r_deploy_releases_$$.json" i=1 tag date
   if ! z2r_fetch_url_to_file "$tmp" "$(deploy_releases_base | sed 's#/download$##')?per_page=20"; then
@@ -833,6 +915,7 @@ deploy_menu_header() {
 
 deploy_update_menu() {
   DEPLOY_WANT_REINSTALL=0
+  unset ZAPRET2_ARCHIVE_DIR ZAPRET2_VERSION
   local answer ans tag variant ver tar_file file_num i found rel_num webui_answer pin_answer
   while true; do
     clear -x
@@ -938,13 +1021,28 @@ $i. $tar_file"
         pause_enter
         ;;
       6)
-        echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
-        echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
-        read -r ans
-        if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-          DEPLOY_WANT_REINSTALL=1
-          return 0
-        fi
+        echo -e "${yellow}Источник zapret2:${plain}"
+        echo -e "  ${Fcyan}1${plain} — скачать с GitHub (выбор версии)"
+        echo -e "  ${Fcyan}2${plain} — локальный архив из /tmp"
+        echo -e "  ${Fyellow}0${plain} — отмена"
+        read -re -p "" ans
+        case "$ans" in
+          1)
+            echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
+            echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
+            read -re -p "" ans
+            if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+              DEPLOY_WANT_REINSTALL=1
+              return 0
+            fi
+            ;;
+          2)
+            deploy_local_zapret2_pick || true
+            if [ "$DEPLOY_WANT_REINSTALL" = 1 ]; then
+              return 0
+            fi
+            ;;
+        esac
         ;;
       7)
         deploy_transition_menu
