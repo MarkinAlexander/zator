@@ -504,6 +504,60 @@ config_mode_text() {
   esac
 }
 
+# Сводка платформы для шапки меню. Keenetic: ndmc show version (description
+# = модель, title = прошивка); Netcraze отличается содержимым /bin/ndmc;
+# Merlin: nvram productid; OpenWrt: /etc/openwrt_release; VPS: PRETTY_NAME.
+platform_summary_text() {
+  local arch model fw verout id ver
+  arch="$(uname -m 2>/dev/null)"
+  if command -v ndmc >/dev/null 2>&1; then
+    if grep -q netcraze /bin/ndmc 2>/dev/null; then
+      printf 'Netcraze (%s)' "${arch:-неизвестно}"
+      return 0
+    fi
+    verout="$(ndmc -c 'show version' 2>/dev/null)"
+    model="$(printf '%s\n' "$verout" | sed -n 's/^[[:space:]]*description:[[:space:]]*//p' | head -n1)"
+    fw="$(printf '%s\n' "$verout" | sed -n 's/^[[:space:]]*title:[[:space:]]*//p' | head -n1)"
+    if [ -n "$model" ]; then
+      printf '%s' "$model"
+      [ -n "$fw" ] && printf ', прошивка %s' "$fw"
+    else
+      printf 'Keenetic (%s)' "${arch:-неизвестно}"
+    fi
+    return 0
+  fi
+  if [ -d /jffs ] && command -v nvram >/dev/null 2>&1; then
+    model="$(nvram get productid 2>/dev/null)"
+    if [ -n "$model" ]; then
+      printf 'Asus Merlin %s (%s)' "$model" "$arch"
+    else
+      printf 'Asus Merlin (%s)' "$arch"
+    fi
+    return 0
+  fi
+  if [ -f /etc/openwrt_release ]; then
+    id="$(sed -n 's/^DISTRIB_ID=//p' /etc/openwrt_release | head -n1 | tr -d "'")"
+    ver="$(sed -n 's/^DISTRIB_RELEASE=//p' /etc/openwrt_release | head -n1 | tr -d "'")"
+    printf '%s %s (%s)' "${id:-OpenWrt}" "$ver" "$arch"
+    return 0
+  fi
+  if [ -f /etc/os-release ]; then
+    fw="$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | head -n1 | tr -d '"')"
+    if [ -n "$fw" ]; then
+      printf '%s (%s)' "$fw" "$arch"
+    else
+      printf 'Linux (%s)' "$arch"
+    fi
+    return 0
+  fi
+  model="$(sed -n 's/^system type[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/dev/null | head -n1)"
+  if [ -n "$model" ]; then
+    printf 'Keenetic, %s (%s)' "$model" "$arch"
+  else
+    printf '%s (%s)' "$(uname -s 2>/dev/null)" "$arch"
+  fi
+}
+
 config_last_modified() {
   local header
   header="$(sed -n 's/^# Last modified:[[:space:]]*//p' "$1" 2>/dev/null | head -n1 | tr -d '\r')"
