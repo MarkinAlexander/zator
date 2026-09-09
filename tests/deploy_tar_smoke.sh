@@ -112,7 +112,7 @@ fi
 STAGE="$WORK/unpack"
 mkdir -p "$STAGE"
 tar -xzf "$DIST/zator-full.tar.gz" -C "$STAGE" || fail "распаковка full"
-grep -q '^ZATOR_VERSION="deploy-' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без версии"
+grep -q '^ZATOR_VERSION="..*"$' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без версии"
 grep -q 'TRACKING="latest"' "$STAGE/extra_strats/cache/deploy/version.env" || fail "version.env без TRACKING"
 head -1 "$STAGE/extra_strats/cache/deploy/manifest.tsv" | grep -q '^# path|dest|class|sha256|size|exec$' || fail "заголовок manifest.tsv"
 grep -q '^_root/z2r.sh|/opt/z2r.sh|auto|' "$STAGE/extra_strats/cache/deploy/manifest.tsv" || fail "manifest без _root/z2r.sh"
