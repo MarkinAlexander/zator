@@ -2,7 +2,8 @@ import { api, formBody } from './client'
 import type {
   ApplyResult, BackupsPayload, CheckPayload, DomainsImportResult, DomainsListPayload,
   FallbackSettings, ModeSettingData, PortInfo, PortsSettings, ProfileInfo, ProviderSettings,
-  ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, WgBlobSettings, WgStateSettings,
+  ScopesPayload, StatePayload, StatusPayload, TlsBlobSettings, UdpGamesSettings, UpdateCheckResult,
+  WgBlobSettings, WgStateSettings,
 } from './types'
 
 export const fetchStatus = (scope: string) =>
@@ -47,6 +48,7 @@ export const fetchSetting = {
   dns_desync: () => api<ModeSettingData>('/cgi-bin/settings.cgi?setting=dns_desync'),
   ports: () => api<PortsSettings>('/cgi-bin/settings.cgi?setting=ports'),
   provider: () => api<ProviderSettings>('/cgi-bin/settings.cgi?setting=provider'),
+  update_check: () => api<UpdateCheckResult>('/cgi-bin/settings.cgi?setting=update_check'),
 }
 
 export const applySetting = {
