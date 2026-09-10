@@ -111,6 +111,19 @@ app_js="$(find "$REPO_DIR/webui-src/src" -type f \( -name '*.vue' -o -name '*.ts
 for needle in 'auto_mode_state' 'hostlist_state' 'rst_guard_state' 'reasm_state' 'quic443_state' 'dns_desync_state' 'ports_add' 'ports_remove' 'provider_set' 'provider_redetect' '/cgi-bin/backups.cgi' "action: 'create'" "action: 'delete'" 'action=download' 'action=upload' 'download-btn' 'backups-toggle' 'confirmDialog'; do
   assert_contains "$app_js" "$needle" "webui-src не использует $needle"
 done
+
+# Проверка обновлений из панели: кнопка в карточке версии (видна только без
+# обновлений), CGI-эндпоинт с коротким fetch, мок и контракт на месте.
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" 'update_check' "settings.cgi GET не знает update_check"
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'api_update_check' "_lib.sh без api_update_check"
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'deploy_latest_write_cache' "api_update_check не пишет кэш latest.env"
+assert_contains "$(cat "$REPO_DIR/lib/deploy.sh")" 'z2r.conf' "deploy_releases_base не учитывает RAW_URL из z2r.conf (CGI без env лаунчера)"
+assert_contains "$app_js" 'update_check' "webui-src не вызывает update_check"
+assert_contains "$app_js" 'update-check-btn' "webui-src без кнопки проверки обновлений"
+assert_contains "$app_js" 'runUpdateCheck' "webui-src без обработчика проверки обновлений"
+assert_contains "$(cat "$REPO_DIR/webui-src/src/components/status/StatusCards.vue")" "verClass === ''" "кнопка обновлений не спрятана при видимых обновлениях"
+assert_contains "$(cat "$REPO_DIR/webui/dev/fake_router_server.py")" 'update_check' "fake_router_server.py без update_check"
+assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'update_check' "API_CONTRACT.md без update_check"
 assert_contains "$app_js" 'AUTO_MODE_GATED_PROFILES' "webui-src не гейтит профили 1-4 при авторотации"
 assert_contains "$app_js" 'fallback-hint' "webui-src без подсказки гейтинга профиля"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'управляется авторотацией' "_lib.sh: set-lock/clear-lock без guard'а авторотации"

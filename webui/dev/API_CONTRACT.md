@@ -448,6 +448,22 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 { "provider": "MTS - Moscow" }   // "Не определён" при пустом кэше
 ```
 
+**Проверка обновлений** (`GET ?setting=update_check`) — единственное сетевое
+действие панели: одиночный короткий fetch `latest.json` (curl 3с/8с, wget
+fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env` и возвращает
+свежий вердикт. Установка/обновление остаются в CLI (п.5/лаунчер):
+
+```jsonc
+{
+  "update_available": false,      // сравнение SHA из version.env и latest.env
+  "release": "stable-20260910-1450",
+  "latest_zator_date": "2026-09-10 14:50",
+  "latest_webui_date": "2026-09-10 14:50",
+  "checked_at": "2026-09-10 15:00",
+  "error": ""                     // "Не удалось связаться с сервером обновлений"
+}                                 // при сетевом сбое (кэш не трогается)
+```
+
 ### POST — применение настроек
 
 Тело: `setting=<...>&value=<...>` (для портов/провайдера — свои ключи, см. ниже).

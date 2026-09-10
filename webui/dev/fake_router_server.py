@@ -2974,6 +2974,16 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 elif setting == "provider":
                     self._log("GET {0} | provider settings".format(parsed.path))
                     self._send_json(self.state.build_provider_settings())
+                elif setting == "update_check":
+                    self._log("GET {0} | update check".format(parsed.path))
+                    self._send_json({
+                        "update_available": False,
+                        "release": "stable-fake",
+                        "latest_zator_date": "",
+                        "latest_webui_date": "",
+                        "checked_at": "1970-01-01 00:00",
+                        "error": "",
+                    })
                 else:
                     self._log("GET {0} | tls_blob settings".format(parsed.path))
                     self._send_json(self.state.build_tls_blob_settings())

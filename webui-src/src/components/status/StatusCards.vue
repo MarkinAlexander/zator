@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { RouteLocationRaw } from 'vue-router'
 import StatCard from '../ui/StatCard.vue'
 import { status, versionInfo } from '../../stores/status'
 import { fallbackSettings } from '../../stores/settings'
+import { fetchAndApplyState } from '../../stores/state'
+import { fetchSetting } from '../../api/endpoints'
+import { showToast } from '../../stores/toast'
 
 interface CardDef {
   label: string
@@ -13,6 +16,31 @@ interface CardDef {
   to?: RouteLocationRaw
   cli?: string
   compact?: boolean
+  cornerAction?: () => void
+  cornerBusy?: boolean
+  cornerTitle?: string
+}
+
+const updateChecking = ref(false)
+
+// Кнопка видна только когда панель не видит обновлений: если обновление
+// или новый конфиг уже показаны — пользователь их и так увидит.
+async function runUpdateCheck() {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  try {
+    const res = await fetchSetting.update_check()
+    if (res.error) {
+      showToast(res.error, 'error')
+      return
+    }
+    await fetchAndApplyState()
+    showToast(res.update_available ? 'Есть обновление' : 'Обновлений нет', res.update_available ? 'info' : 'success')
+  } catch {
+    showToast('Не удалось проверить обновления', 'error')
+  } finally {
+    updateChecking.value = false
+  }
 }
 
 const cards = computed<CardDef[]>(() => {
@@ -66,7 +94,10 @@ const cards = computed<CardDef[]>(() => {
   }
 
   return [
-    { label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: verClass === '' },
+    {
+      label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: verClass === '',
+      ...(verClass === '' ? { cornerAction: runUpdateCheck, cornerBusy: updateChecking.value, cornerTitle: 'Проверить обновления' } : {}),
+    },
     { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad', subText: z2Parts.length ? z2Parts.join('\n') : undefined },
     { label: 'Локи стратегий', value: data.strategy_locks_status ?? '—', to: '/strategies' },
     { label: 'Client scopes', value: scopeMode, stateClass: scopeMode === 'mark' ? 'ok' : '', subText: scopeSub, to: scopeTarget },

@@ -145,6 +145,15 @@ export interface ApplyResult {
   check?: CheckPayload
 }
 
+export interface UpdateCheckResult {
+  update_available: boolean
+  release?: string
+  latest_zator_date?: string
+  latest_webui_date?: string
+  checked_at?: string
+  error?: string
+}
+
 export interface DomainsImportResult {
   added?: number
   duplicates?: number

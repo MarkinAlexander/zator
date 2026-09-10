@@ -75,7 +75,13 @@ deploy_releases_base() {
     printf '%s' "$mirror"
     return 0
   fi
-  local base="${Z2R_PROJECT_RAW_BASE:-https://raw.githubusercontent.com/AloofLibra/zator/zator}"
+  local base="${Z2R_PROJECT_RAW_BASE:-}"
+  # CGI и прямой запуск z2r.sh не наследуют env лаунчера: репозиторий берём
+  # из его же конфига (RAW_URL пишет туда лаунчер с URL-аргументом форка).
+  if [ -z "$base" ] && [ -f "${Z2R_CONF:-/opt/z2r.conf}" ]; then
+    base="$(deploy_env_get "${Z2R_CONF:-/opt/z2r.conf}" RAW_URL)"
+  fi
+  [ -n "$base" ] || base="https://raw.githubusercontent.com/AloofLibra/zator/zator"
   local owner repo
   owner="$(printf '%s' "$base" | cut -d/ -f4)"
   repo="$(printf '%s' "$base" | cut -d/ -f5)"
@@ -141,16 +147,9 @@ deploy_fetch_release_meta() {
   [ -n "$DEPLOY_META_RELEASE" ]
 }
 
-deploy_check_latest() {
-  DEPLOY_UPDATE_ZATOR=0
-  DEPLOY_UPDATE_WEBUI=0
-  if ! deploy_fetch_release_meta latest; then
-    echo -e "${yellow}Не достучались до сервера обновлений.${plain}"
-    if [ -n "$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)" ]; then
-      echo -e "${yellow}Проверьте зеркало или сбросьте источник: п.5 -> п.10.${plain}"
-    fi
-    return 1
-  fi
+# Перезапись кэша latest.env из DEPLOY_META_* (заполняются
+# deploy_fetch_release_meta или точечным фетчем веб-панели).
+deploy_latest_write_cache() {
   mkdir -p "$DEPLOY_CACHE_DIR"
   cat > "${DEPLOY_LATEST_FILE}.tmp" <<EOF
 LATEST_RELEASE="$DEPLOY_META_RELEASE"
@@ -162,6 +161,19 @@ LATEST_WEBUI_SHA="$DEPLOY_META_WEBUI_SHA"
 LATEST_CHECKED_AT="$(date -u '+%Y-%m-%d %H:%M')"
 EOF
   mv -f "${DEPLOY_LATEST_FILE}.tmp" "$DEPLOY_LATEST_FILE"
+}
+
+deploy_check_latest() {
+  DEPLOY_UPDATE_ZATOR=0
+  DEPLOY_UPDATE_WEBUI=0
+  if ! deploy_fetch_release_meta latest; then
+    echo -e "${yellow}Не достучались до сервера обновлений.${plain}"
+    if [ -n "$(deploy_env_get "$(deploy_sources_file)" RELEASES_MIRROR)" ]; then
+      echo -e "${yellow}Проверьте зеркало или сбросьте источник: п.5 -> п.10.${plain}"
+    fi
+    return 1
+  fi
+  deploy_latest_write_cache
 
   local zator_sha webui_sha
   zator_sha="$(deploy_version_field ZATOR_SHA)"

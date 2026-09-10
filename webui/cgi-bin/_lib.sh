@@ -784,6 +784,57 @@ api_check() {
   send_json "200 OK" "{\"results\":[${results}]}"
 }
 
+# settings.cgi?setting=update_check: проверка наличия релиза из веб-панели.
+# Одиночный короткий fetch (CGI не должен подвешивать httpd; базовый
+# z2r_fetch_url_to_file ретраит до ~36с — тут неприемлемо), кэш latest.env
+# обновляется штатным deploy_latest_write_cache, дальше state.cgi видит
+# результат как обычно. Установка/обновление остаются в CLI (п.5/лаунчер).
+api_update_check() {
+  if ! type deploy_json_str >/dev/null 2>&1 || ! type deploy_releases_base >/dev/null 2>&1; then
+    send_json "200 OK" '{"update_available":false,"release":"","latest_zator_date":"","latest_webui_date":"","checked_at":"","error":"Модуль обновлений недоступен"}'
+    return 0
+  fi
+  local meta="/tmp/z2r_webui_meta_$$.json" err="" url
+  rm -f "$meta"
+  url="$(deploy_releases_base)/latest/latest.json"
+  if curl -fsSLk --connect-timeout 3 --max-time 8 -o "$meta" "$url" 2>/dev/null \
+     || wget -q -T 8 -O "$meta" "$url" 2>/dev/null; then
+    DEPLOY_META_RELEASE="$(deploy_json_str "$meta" release)"
+    DEPLOY_META_BUILD_DATE="$(deploy_json_str "$meta" buildDate)"
+    DEPLOY_META_ZATOR_DATE="$(deploy_json_str "$meta" zatorDate)"
+    DEPLOY_META_WEBUI_DATE="$(deploy_json_str "$meta" webuiDate)"
+    DEPLOY_META_ZATOR_SHA="$(deploy_json_str "$meta" zatorSha)"
+    DEPLOY_META_WEBUI_SHA="$(deploy_json_str "$meta" webuiSha)"
+    rm -f "$meta"
+    [ -n "$DEPLOY_META_RELEASE" ] && type deploy_latest_write_cache >/dev/null 2>&1 && deploy_latest_write_cache
+  else
+    rm -f "$meta"
+    err="Не удалось связаться с сервером обновлений"
+  fi
+
+  local update=false zs ws lzs lws
+  zs="$(deploy_version_field ZATOR_SHA)"
+  lzs="$(deploy_latest_field LATEST_ZATOR_SHA)"
+  ws="$(deploy_version_field WEBUI_SHA)"
+  lws="$(deploy_latest_field LATEST_WEBUI_SHA)"
+  if { [ -n "$zs" ] && [ -n "$lzs" ] && [ "$zs" != "$lzs" ]; } \
+     || { [ -e "$ZATOR_ROOT/webui/run-webui.sh" ] && [ -n "$ws" ] && [ -n "$lws" ] && [ "$ws" != "$lws" ]; }; then
+    update=true
+  fi
+
+  local rel lz lw ck j_rel j_lz j_lw j_ck j_err
+  rel="$(deploy_latest_field LATEST_RELEASE)"
+  lz="$(deploy_latest_field LATEST_ZATOR_DATE)"
+  lw="$(deploy_latest_field LATEST_WEBUI_DATE)"
+  ck="$(deploy_latest_field LATEST_CHECKED_AT)"
+  _json_esc "$rel"; j_rel="$REPLY"
+  _json_esc "$lz"; j_lz="$REPLY"
+  _json_esc "$lw"; j_lw="$REPLY"
+  _json_esc "$ck"; j_ck="$REPLY"
+  _json_esc "$err"; j_err="$REPLY"
+  send_json "200 OK" "{\"update_available\":$update,\"release\":\"$j_rel\",\"latest_zator_date\":\"$j_lz\",\"latest_webui_date\":\"$j_lw\",\"checked_at\":\"$j_ck\",\"error\":\"$j_err\"}"
+}
+
 api_tls_blob_get() {
   local cfg="/opt/zapret2/config"
   local fake_dir="/opt/zator/files/fake"
