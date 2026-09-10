@@ -1410,7 +1410,22 @@ profile_config_apply_state() {
       fi
       ;;
     *)
-      max="$(config_profile_max_strategy "$profile" "$cfg")"
+      # Кастомные домены (custom RKN, ключ — hostname) подбираются в
+      # диапазоне профиля 3, как в orch_scope_validate; числовые профили —
+      # в своём собственном.
+      local max_profile="$profile"
+      if ! printf '%s' "$profile" | grep -Eq '^[0-9]+$'; then
+        if printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
+          max_profile=3
+        else
+          max_profile=""
+        fi
+      fi
+      if [ -n "$max_profile" ]; then
+        max="$(config_profile_max_strategy "$max_profile" "$cfg")"
+      else
+        max=""
+      fi
       if ! printf '%s' "$max" | grep -Eq '^[1-9][0-9]*$' || [ "$normalized" -gt "$max" ]; then
         echo "Пропуск сохранённого состояния профиля $profile: стратегия $normalized вне диапазона."
         return 0
