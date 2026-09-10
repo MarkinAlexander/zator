@@ -2,7 +2,6 @@
 
 ORCH_DIR="${ORCH_DIR:-/opt/zator/extra_strats/cache/orchestra}"
 ORCH_LOCK_FILE="${ORCH_LOCK_FILE:-$ORCH_DIR/locked.tsv}"
-PROFILE_STATE_FILE="${PROFILE_STATE_FILE:-${Z2R_PROFILE_STATE_FILE:-/opt/etc/z2r/profile.lock}}"
 
 # Базовое чтение блокировки из locked.tsv. $3 — значение по умолчанию.
 # Единый awk для orch_locked_get (default "0") и orch_locked_state_get (default "auto").
@@ -416,9 +415,12 @@ zapret2_running() {
   pidof nfqws2 >/dev/null 2>&1
 }
 
-profile_state_file() {
-  printf '%s\n' "$PROFILE_STATE_FILE"
-}
+# --- Состояние профилей: единственный источник — locked.tsv ---
+# Исторически выбор пользователя дублировался в /opt/etc/z2r/profile.lock
+# (когда locked.tsv жил в /opt/zapret2 и умирал при каждом обновлении
+# zapret2). Теперь locked.tsv в /opt/zator и переживает обновления, поэтому
+# profile.lock упразднён: profile_state_* — API над locked.tsv, локи
+# профилей 8/9 (fallback) живут в locked.manual.tsv через ORCH_LOCK_FILE.
 
 profile_state_normalize() {
   case "$1" in
@@ -438,34 +440,8 @@ profile_state_normalize() {
   esac
 }
 
-profile_state_stored_get() {
-  local profile="$1"
-  local proto="$2"
-  local file
-  file="$(profile_state_file)"
-
-  [ -f "$file" ] || { echo "auto"; return 0; }
-  awk -v pr="$profile" -v p="$proto" '
-    BEGIN { FS="[ \t]+" }
-    /^[[:space:]]*#/ || NF == 0 { next }
-    $1 == pr && $2 == p && NF >= 3 { print $3; found=1; exit }
-    $1 == pr && NF == 2 && p == "tls" { print $2; found=1; exit }
-    END { if (!found) print "auto" }
-  ' "$file"
-}
-
 profile_state_get() {
-  local profile="$1"
-  local proto="$2"
-  local stored
-
-  stored="$(profile_state_stored_get "$profile" "$proto")"
-  if [ "$stored" != "auto" ]; then
-    profile_state_normalize "$stored" || echo "auto"
-    return 0
-  fi
-
-  profile_state_normalize "$(orch_locked_state_get "$profile" "$proto")" || echo "auto"
+  profile_state_normalize "$(orch_locked_state_get "$1" "$2")" || echo "auto"
 }
 
 profile_state_display() {
@@ -488,52 +464,58 @@ profile_state_validate_strategy() {
   return 0
 }
 
-# Атомарная перезапись файла состояния профиля.
-# Удаляет запись профиля $2/$3, опционально добавляет новую ($4 — пусто = только удалить).
-# Единая awk+tmp+cmp логика для profile_state_set и profile_state_clear.
-_profile_state_write() {
-  local file="$1" profile="$2" proto="$3" state="$4"
-  local tmp="${file}.tmp.$$"
-
-  mkdir -p "$(dirname "$file")"
-  if [ -f "$file" ]; then
-    awk -v pr="$profile" -v p="$proto" '
-      BEGIN { FS=OFS="\t" }
-      /^[[:space:]]*#/ || NF == 0 { print; next }
-      $1 == pr && (($2 == p) || (NF == 2 && p == "tls")) { next }
-      { print }
-    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
-  else
-    : > "$tmp"
-  fi
-  [ -n "$state" ] && printf '%s\t%s\t%s\n' "$profile" "$proto" "$state" >> "$tmp"
-
-  if [ -f "$file" ] && cmp -s "$file" "$tmp"; then
-    rm -f "$tmp"
-  else
-    mv -f "$tmp" "$file"
-  fi
-}
-
 profile_state_set() {
   local profile="$1"
   local proto="$2"
-  local state
+  local state saved rc=0
 
   state="$(profile_state_normalize "$3")" || return 1
   [ "$state" = "auto" ] && { profile_state_clear "$profile" "$proto"; return $?; }
   profile_state_validate_strategy "$profile" "$state" || return 1
-
-  [ "$(profile_state_stored_get "$profile" "$proto")" = "$state" ] && return 0
-
-  _profile_state_write "$(profile_state_file)" "$profile" "$proto" "$state"
+  saved="$ORCH_LOCK_FILE"
+  case "$profile" in 8|9) ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv" ;; esac
+  orch_locked_set "$profile" "$proto" "$state" || rc=$?
+  ORCH_LOCK_FILE="$saved"
+  return "$rc"
 }
 
 profile_state_clear() {
   local profile="$1"
   local proto="$2"
+  local saved rc=0
 
-  [ "$(profile_state_stored_get "$profile" "$proto")" = "auto" ] && return 0
+  saved="$ORCH_LOCK_FILE"
+  case "$profile" in 8|9) ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv" ;; esac
+  orch_locked_clear "$profile" "$proto" || rc=$?
+  ORCH_LOCK_FILE="$saved"
+  return "$rc"
+}
 
-  _profile_state_write "$(profile_state_file)" "$profile" "$proto" ""
+# Разовая миграция legacy profile.lock (/opt/etc/z2r) в lock-файлы.
+# При конфликте побеждает существующий лок (рантайм-истина): строки
+# profile.lock дозаполняют только отсутствующие профили. Профили 8/9
+# пишутся в locked.manual.tsv (маршрут profile_config_orch_set). Файл
+# удаляется, пустой каталог /opt/etc/z2r убирается. Идемпотентна.
+orch_profile_lock_migrate() {
+  local legacy="${Z2R_PROFILE_STATE_FILE:-/opt/etc/z2r/profile.lock}"
+  local saved_lock profile proto state cur
+  [ -f "$legacy" ] || return 0
+
+  saved_lock="$ORCH_LOCK_FILE"
+  while IFS="$(printf '\t')" read -r profile proto state; do
+    case "$profile" in ""|\#*) continue ;; esac
+    [ -n "$state" ] || { state="$proto"; proto="tls"; }
+    printf '%s' "$state" | grep -Eq '^(0|[1-9][0-9]*)$' || continue
+    case "$profile" in 8|9) ORCH_LOCK_FILE="$ORCH_DIR/locked.manual.tsv" ;; esac
+    cur="$(orch_locked_state_get "$profile" "$proto")"
+    if [ "$cur" = "auto" ]; then
+      orch_scoped_locked_set default "$profile" "$proto" "$state" || true
+    fi
+    ORCH_LOCK_FILE="$saved_lock"
+  done <<EOF
+$(awk 'BEGIN{FS="[ \t]+"} /^[[:space:]]*#/ || NF==0 {next} NF>=3 {print $1 "\t" $2 "\t" $3} NF==2 {print $1 "\ttls\t" $2}' "$legacy")
+EOF
+  rm -f "$legacy"
+  rmdir "$(dirname "$legacy")" 2>/dev/null || true
+  return 0
 }

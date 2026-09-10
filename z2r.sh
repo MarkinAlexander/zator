@@ -456,6 +456,12 @@ if [ -f "$LIB_DIR/deploy.sh" ]; then
   source "$LIB_DIR/deploy.sh"
 fi
 
+# Разовая миграция: legacy profile.lock (/opt/etc/z2r) сливается в lock-файлы
+# (существующий лок побеждает), файл и каталог удаляются. Идемпотентна.
+if type orch_profile_lock_migrate >/dev/null 2>&1; then
+  orch_profile_lock_migrate || true
+fi
+
 # Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
 # из TCP_Custom.txt (старые обновления затирали список), возвращаются в список.
 if type custom_rkn_restore_from_locks >/dev/null 2>&1; then
@@ -1262,6 +1268,9 @@ zator_remove() {
   fi
   strategy_validator_remove_service || true
   webui_remove || true
+  # До эпохи единого locked.tsv состояние профилей жило в /opt/etc/z2r —
+  # убираем, чтобы после полного удаления не оставалось «призраков».
+  rm -rf /opt/etc/z2r 2>/dev/null || true
   if ! rm -rf "$ZATOR_ROOT" 2>/dev/null; then
     echo -e "${red}Не удалось полностью удалить $ZATOR_ROOT${plain}"
     return 1

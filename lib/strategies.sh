@@ -531,33 +531,27 @@ orch_auto_sweep() {
 
 get_orchestra_locks_info() {
     local output_var="${1:-}"
-    local profile_state_file orch_lock_file
     # fallback для автономного вызова (CGI/WebUI не наследует палитру z2r.sh)
     [ -z "${gray:-}" ] && gray='\033[0;90m'
-    profile_state_file="$PROFILE_STATE_FILE"
-    orch_lock_file="$ORCH_LOCK_FILE"
 
     local _pairs="1:tls|2:tls|3:tls|4:tls|5:udp|6:udp|7:udp|8:tls|9:http|10:udp"
-    local stored_line orch_line
+    local orch_line
     if [ "${ORCH_ACTIVE_SCOPE:-default}" = default ]; then
-      stored_line="$(_orchestra_multi_state "$profile_state_file" "$_pairs")"
-      orch_line="$(_orchestra_multi_state "$orch_lock_file" "$_pairs")"
+      # Локи 8/9 (fallback) живут в locked.manual.tsv: строки обоих файлов
+      # читаются одним потоком, первая совпавшая пара побеждает.
+      orch_line="$(_orchestra_multi_state "$_pairs" "$ORCH_LOCK_FILE" "$ORCH_DIR/locked.manual.tsv")"
     else
-      # Контекст mark'и (client scopes): показываем локи только этого клиента,
-      # глобальный profile state в шапку не примешиваем.
-      stored_line=""
-      orch_line="$(_orchestra_multi_state "$(_orch_scope_lock_file "$ORCH_ACTIVE_SCOPE" 2>/dev/null || printf '%s\n' "$orch_lock_file")" "$_pairs")"
+      # Контекст mark'и (client scopes): показываем локи только этого клиента.
+      orch_line="$(_orchestra_multi_state "$_pairs" "$(_orch_scope_lock_file "$ORCH_ACTIVE_SCOPE" 2>/dev/null || printf '%s\n' "$ORCH_LOCK_FILE")")"
     fi
 
-    local s_vals o_vals
-    IFS=$'\t' read -ra s_vals <<< "$stored_line"
+    local o_vals
     IFS=$'\t' read -ra o_vals <<< "$orch_line"
     local labels=("YT_TLS" "GV_TLS" "RKN_TLS" "DS_TLS" "YT_QUIC_UDP" "VOICE_UDP" "GAMES_UDP" "FB_TLS" "FB_HTTP" "DNS_UDP")
     local state_vars=("STRATEGY_STATE_YT_TLS" "STRATEGY_STATE_GV_TLS" "STRATEGY_STATE_RKN_TLS" "STRATEGY_STATE_DS_TLS" "STRATEGY_STATE_YT_QUIC_UDP" "STRATEGY_STATE_VOICE_UDP" "STRATEGY_STATE_GAMES_UDP" "STRATEGY_STATE_FB_TLS" "STRATEGY_STATE_FB_HTTP" "STRATEGY_STATE_DNS_UDP")
     local i raw eff colored rendered=""
     for ((i = 0; i < ${#labels[@]}; i++)); do
-        raw="${s_vals[i]:-auto}"
-        [ "$raw" = "auto" ] && raw="${o_vals[i]:-auto}"
+        raw="${o_vals[i]:-auto}"
         case "$raw" in
             ""|auto)
                 eff="auto"
@@ -587,13 +581,21 @@ get_orchestra_locks_info() {
     fi
 }
 
+# Значения пар profile:proto из перечисленных lock-файлов, порядок пар
+# сохраняется. Файлы читаются одним потоком: первая совпавшая строка
+# побеждает (locked.tsv раньше locked.manual.tsv).
 _orchestra_multi_state() {
-    local file="$1" pairs="$2"
-    if [ -z "$file" ] || [ ! -f "$file" ]; then
+    local pairs="$1" _f
+    shift
+    if [ "$#" -eq 0 ]; then
         printf 'auto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\tauto\n'
         return 0
     fi
-    awk -v pairs="$pairs" '
+    {
+        for _f in "$@"; do
+            [ -n "$_f" ] && [ -f "$_f" ] && cat -- "$_f" 2>/dev/null
+        done
+    } | awk -v pairs="$pairs" '
         BEGIN {
             FS = "[ \t]+"
             n = split(pairs, P, "|")
@@ -616,7 +618,8 @@ _orchestra_multi_state() {
             for (i = 1; i <= n; i++) out = out R[i] (i < n ? "\t" : "")
             print out
         }
-    ' "$file"
+    '
+    return 0
 }
 
 # Нормализация введённого значения в чистый домен.

@@ -1465,28 +1465,31 @@ profile_apply_all() {
   local file profile proto state rest rc
 
   cfg="$(config_get_file "$cfg")" || return 0
-  file="$(profile_state_file)"
-  [ -f "$file" ] || return 0
-
-  while read -r profile proto state rest; do
-    case "$profile" in
-      ""|\#*) continue ;;
-    esac
-    if [ -z "$state" ]; then
-      state="$proto"
-      proto="$(config_profile_proto_list "$profile")"
-    fi
-    if profile_config_apply_state "$profile" "$proto" "$state" "$cfg"; then
-      continue
-    else
-      rc=$?
-    fi
-    if [ "$rc" -eq 2 ]; then
-      echo "Пропуск сохранённого состояния профиля $profile: некорректное состояние '$state'."
-      continue
-    fi
-    return "$rc"
-  done < "$file"
+  # Локи профилей — единственный источник: locked.tsv (1-7, 10) и
+  # locked.manual.tsv (8/9 fallback). Строка «auto» в файлах не хранится
+  # (auto = отсутствие строки), поэтому применяется только явное состояние.
+  for file in "$ORCH_LOCK_FILE" "$ORCH_DIR/locked.manual.tsv"; do
+    [ -f "$file" ] || continue
+    while read -r profile proto state rest; do
+      case "$profile" in
+        ""|\#*) continue ;;
+      esac
+      if [ -z "$state" ]; then
+        state="$proto"
+        proto="$(config_profile_proto_list "$profile")"
+      fi
+      if profile_config_apply_state "$profile" "$proto" "$state" "$cfg"; then
+        continue
+      else
+        rc=$?
+      fi
+      if [ "$rc" -eq 2 ]; then
+        echo "Пропуск сохранённого состояния профиля $profile: некорректное состояние '$state'."
+        continue
+      fi
+      return "$rc"
+    done < "$file"
+  done
   return 0
 }
 
