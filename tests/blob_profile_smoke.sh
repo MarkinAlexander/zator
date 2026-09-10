@@ -83,7 +83,7 @@ assert_contains "$LOCKED_LUa_SRC" 'blob_exist\(desync, name\)' "хук не пр
 assert_contains "$DETECTOR_SRC" 'blob_override_execute\(desync, verdict, instance, desync\.arg\.key\)' \
   "circular_quality не использует хук"
 
-for p in 1 2 3 8; do
+for p in 1 2 3 4 8; do
   assert_contains "$CONFIG_SRC" "^--blob=z2r_prof_${p}:@/opt/zator/files/fake/" \
     "config.default не объявляет слот z2r_prof_${p}"
 done
@@ -101,6 +101,7 @@ assert_contains "$SETTINGS_CGI_SRC" 'tls_blob_profile' "settings.cgi не зна
 
 assert_contains "$WEBUI_SRC_ALL" 'tls-blob-profile-form' "webui-src нет формы tls-blob-profile-form"
 assert_contains "$WEBUI_SRC_ALL" 'tls-blob-profile-\$\{p\.id\}' "webui-src нет селектов по профилям"
+assert_contains "$WEBUI_SRC_ALL" "id: '4'" "webui-src в PROFILE_ITEMS нет профиля 4 (Discord)"
 assert_contains "$WEBUI_SRC_ALL" "id: '8'" "webui-src в PROFILE_ITEMS нет профиля 8"
 assert_contains "$WEBUI_SRC_ALL" 'tls_blob_profile' "webui-src не зовёт tls_blob_profile"
 
@@ -115,8 +116,8 @@ z2r_backup_state_files | grep -q 'extra_strats/cache/orchestra/blob_override.tsv
 
 # --- 2. Хелперы blob_override_* --------------------------------------------
 
-[ "$(blob_override_supported_profiles | tr '\n' ' ')" = "1 2 3 8 " ] \
-  || fail "blob_override_supported_profiles != '1 2 3 8'"
+[ "$(blob_override_supported_profiles | tr '\n' ' ')" = "1 2 3 4 8 " ] \
+  || fail "blob_override_supported_profiles != '1 2 3 4 8'"
 
 blob_override_set 2 fake_default_tls || fail "blob_override_set не пишет строку"
 [ "$(blob_override_name 2)" = "fake_default_tls" ] || fail "blob_override_name не читает строку"
