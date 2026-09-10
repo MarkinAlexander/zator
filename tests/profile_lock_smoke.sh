@@ -41,7 +41,7 @@ ROOT="$TMP_DIR/zapret2"
 CFG="$ROOT/config"
 export ORCH_DIR="$ROOT/extra_strats/cache/orchestra"
 export ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
-export PROFILE_STATE_FILE="$TMP_DIR/profile.lock"
+export Z2R_PROFILE_STATE_FILE="$TMP_DIR/legacy_profile.lock"
 export ZAPRET2_INIT="$ROOT/init.d/sysv/zapret2"
 
 mkdir -p "$ORCH_DIR" "$ROOT/init.d/sysv"
@@ -358,17 +358,14 @@ assert_contains "$(auto_pair_block "$PORT_CFG" "" 3)" '^--filter-tcp=12345,80,44
 [ "$(profile_state_get 3 tls)" = "auto" ] || fail "missing state must be auto"
 
 orch_locked_set 2 tls 5
-[ "$(profile_state_get 2 tls)" = "5" ] || fail "effective state must read existing orchestra lock"
-[ "$(profile_state_stored_get 2 tls)" = "auto" ] || fail "existing orchestra lock must not create persistent state"
+[ "$(profile_state_get 2 tls)" = "5" ] || fail "profile state must read the orchestra lock directly"
 orch_locked_clear 2 tls
 
 profile_state_set 3 tls 0
-[ "$(profile_state_stored_get 3 tls)" = "0" ] || fail "RKN 0 was not stored"
+[ "$(orch_locked_state_get 3 tls)" = "0" ] || fail "RKN 0 was not stored in the orchestra lock"
 [ "$(profile_state_display 3 tls)" = "0" ] || fail "0 must be displayed as 0"
-grep -Eq '^3[[:space:]]+tls[[:space:]]+0$' "$PROFILE_STATE_FILE" || fail "RKN 0 row is missing"
+grep -Eq '^3[[:space:]]+tls[[:space:]]+0$' "$ORCH_LOCK_FILE" || fail "RKN 0 row is missing in locked.tsv"
 profile_apply_all "$CFG"
-[ "$(orch_locked_get 3 tls)" = "0" ] || fail "RKN 0 was not rehydrated into orchestra lock"
-[ "$(orch_locked_state_get 3 tls)" = "0" ] || fail "explicit 0 lock must be distinguishable from auto"
 
 sum_before="$(file_sha "$CFG")"
 profile_apply_all "$CFG"
@@ -396,6 +393,7 @@ profile_config_apply_state 6 udp 1 "$CFG"
 if profile_config_voice_ports_changed 6 "$CFG" "$udp_ports_before"; then
   fail "VOICE strategy change was mistaken for a port change"
 fi
+profile_state_set 6 udp 2
 
 profile_state_set 8 tls 0
 profile_apply_all "$CFG"
@@ -404,7 +402,6 @@ manual_lock="$ORCH_DIR/locked.manual.tsv"
 grep -Eq '^8[[:space:]]+tls[[:space:]]+0$' "$manual_lock" || fail "fallback TLS 0 was not written to locked.manual.tsv"
 
 profile_state_set_and_apply 3 "tls" auto "$CFG"
-[ "$(profile_state_stored_get 3 tls)" = "auto" ] || fail "RKN state was not cleared to auto"
 [ "$(orch_locked_state_get 3 tls)" = "auto" ] || fail "RKN orchestra lock was not cleared on auto"
 
 orch_locked_set 3 tls 1
@@ -424,20 +421,28 @@ profile_apply_all "$CFG"
 assert_contains "$(config_get_var "$CFG" NFQWS2_PORTS_UDP)" '(^|,)50000-50099(,|$)' "stored VOICE N did not restore voice ports on fresh config"
 grep -Eq '^8[[:space:]]+tls[[:space:]]+0$' "$manual_lock" || fail "stored fallback TLS 0 was not rehydrated"
 
-printf '5\tudp\t99\n' > "$PROFILE_STATE_FILE"
+# Вне диапазона и мусорные строки в lock-файле: apply_all пропускает, не падает.
+# Строки пишутся напрямую: валидирующий orch_locked_set такие значения отвергает.
+printf '5\tudp\t99\n' >> "$ORCH_LOCK_FILE"
 profile_apply_all "$CFG" >/dev/null
-printf '5\tudp\tbad\n' > "$PROFILE_STATE_FILE"
+printf '5\tudp\tbad\n' >> "$ORCH_LOCK_FILE"
 profile_apply_all "$CFG" >/dev/null
+clean_tmp="${ORCH_LOCK_FILE}.clean.$$"
+awk -F '\t' '!($1=="5" && $2=="udp")' "$ORCH_LOCK_FILE" > "$clean_tmp" && mv -f "$clean_tmp" "$ORCH_LOCK_FILE"
 
+# Ошибка записи лока не маскируется apply_all: readable-источник (manual)
+# плюс битый ORCH_LOCK_FILE -> apply_state падает, apply_all возвращает ошибку.
 saved_orch_lock_file="$ORCH_LOCK_FILE"
 broken_lock_parent="$TMP_DIR/locked-parent-is-file"
 printf 'not a directory\n' > "$broken_lock_parent"
 ORCH_LOCK_FILE="$broken_lock_parent/locked.tsv"
-printf '3\ttls\t0\n' > "$PROFILE_STATE_FILE"
+printf '3\ttls\t0\n' >> "$ORCH_DIR/locked.manual.tsv"
 if profile_apply_all "$CFG" >/dev/null 2>&1; then
   fail "profile_apply_all masked an orchestra lock write error"
 fi
 ORCH_LOCK_FILE="$saved_orch_lock_file"
+clean_tmp="${ORCH_DIR}/locked.manual.tsv.clean.$$"
+awk -F '\t' '!($1=="3" && $2=="tls")' "$ORCH_DIR/locked.manual.tsv" > "$clean_tmp" && mv -f "$clean_tmp" "$ORCH_DIR/locked.manual.tsv"
 
 # --- Профиль 10: антиспуф DNS (тумблер, порт 53, локи, снапшот меню) ---
 [ "$(config_profile_max_strategy 10 "$CFG")" = "20" ] || fail "DNS profile max strategy must be 20"
@@ -471,12 +476,15 @@ backup_smart_apply_flags "$DNS_OLD_CFG" "$DNS_NEW_CFG"
 [ "$(config_mode_text dns_desync "$DNS_NEW_CFG")" = "Выключен" ] || fail "smart restore lost DNS antispoof state"
 
 # сохранённый лок профиля 10 реанимируется на свежем config
-printf '10\tudp\t2\n' > "$PROFILE_STATE_FILE"
+orch_locked_set 10 udp 2
 profile_apply_all "$CFG" >/dev/null
-[ "$(orch_locked_get 10 udp)" = "2" ] || fail "stored DNS lock was not rehydrated into orchestra lock"
-printf '10\tudp\t99\n' > "$PROFILE_STATE_FILE"
-profile_apply_all "$CFG" >/dev/null
-[ "$(orch_locked_get 10 udp)" = "2" ] || fail "out-of-range DNS lock must be skipped, not applied"
+[ "$(orch_locked_get 10 udp)" = "2" ] || fail "stored DNS lock was not re-applied from the orchestra lock"
+orch_locked_clear 10 udp
+printf '10\tudp\t99\n' >> "$ORCH_LOCK_FILE"
+out="$(profile_apply_all "$CFG" 2>/dev/null)"
+assert_contains "$out" 'Пропуск' "out-of-range DNS lock must be skipped with a notice"
+clean_tmp="${ORCH_LOCK_FILE}.dns.$$"
+awk -F '\t' '!($1=="10" && $2=="udp")' "$ORCH_LOCK_FILE" > "$clean_tmp" && mv -f "$clean_tmp" "$ORCH_LOCK_FILE"
 
 # снапшот главного меню: лимит профиля 10 и состояние тумблера
 menu_config_snapshot "$CFG"
@@ -495,6 +503,32 @@ printf '2\n0\n\n' | orch_profile_try 4 "Профиль 4: TCP 443 (Discord)" "tl
 if grep -q '^4[[:space:]]*tls[[:space:]]*0$' "$ORCH_LOCK_FILE"; then
   fail "cancelled trial wrote lock 0 for a lockless profile"
 fi
+
+# --- Миграция legacy profile.lock: рантайм побеждает, дырки дозаполняются ---
+MIG_DIR="$TMP_DIR/mig-orch"
+MIG_LOCK="$MIG_DIR/locked.tsv"
+MIG_MANUAL="$MIG_DIR/locked.manual.tsv"
+mkdir -p "$MIG_DIR"
+printf '2\ttls\t5\n' > "$MIG_LOCK"
+printf '8\ttls\t0\n' > "$MIG_MANUAL"
+printf '1\ttls\t28\n2\ttls\t9\n5\tudp\t3\n8\ttls\t4\n9\thttp\t2\nbogus\n' > "$Z2R_PROFILE_STATE_FILE"
+saved_mig_dir="$ORCH_DIR"
+saved_mig_lock="$ORCH_LOCK_FILE"
+ORCH_DIR="$MIG_DIR"
+ORCH_LOCK_FILE="$MIG_LOCK"
+orch_profile_lock_migrate || fail "legacy profile.lock migration failed"
+ORCH_DIR="$saved_mig_dir"
+ORCH_LOCK_FILE="$saved_mig_lock"
+grep -Eq '^1[[:space:]]+tls[[:space:]]+28$' "$MIG_LOCK" || fail "migration did not fill a missing profile lock"
+grep -Eq '^2[[:space:]]+tls[[:space:]]+5$' "$MIG_LOCK" || fail "migration overrode an existing runtime lock"
+grep -Eq '^5[[:space:]]+udp[[:space:]]+3$' "$MIG_LOCK" || fail "migration did not fill a missing UDP lock"
+grep -Eq '^8[[:space:]]+tls[[:space:]]+0$' "$MIG_MANUAL" || fail "migration overrode an existing fallback lock"
+if grep -Eq '^8[[:space:]]+tls[[:space:]]+4$' "$MIG_MANUAL"; then
+  fail "legacy fallback value leaked over an existing manual lock"
+fi
+grep -Eq '^9[[:space:]]+http[[:space:]]+2$' "$MIG_MANUAL" || fail "fallback profile 9 must migrate into locked.manual.tsv"
+[ ! -f "$Z2R_PROFILE_STATE_FILE" ] || fail "legacy profile.lock was not removed"
+orch_profile_lock_migrate || fail "migration is not idempotent without the legacy file"
 
 # --- Дата изменения config (# Last modified) для главного меню ---
 grep -q '^# Last modified: ' "$REPO_DIR/config.default" \

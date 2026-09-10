@@ -144,9 +144,9 @@ _json_esc() {
 }
 
 # Пакетное чтение lock-состояний профилей: один проход по файлам
-# (locked.tsv, locked.manual.tsv, profile.lock) вместо ~4 внешних процессов
-# на каждый профиль. Семантика orch_scoped_lock_source / orch_locked_state_get /
-# profile_state_stored_get / profile_state_normalize сохранена; L — locked.tsv,
+# (locked.tsv, locked.manual.tsv) вместо ~4 внешних процессов на каждый
+# профиль. Семантика orch_scoped_lock_source / orch_locked_state_get /
+# profile_state_normalize сохранена; L — locked.tsv,
 # M — locked.manual.tsv (fallback-профили 8/9).
 _profile_states_scan() {
   local line pr rest po val cur var file tag
@@ -170,28 +170,12 @@ _profile_states_scan() {
       fi
     done < "$file"
   done
-  # profile.lock: profile proto state (или старый profile state = tls)
-  file="${PROFILE_STATE_FILE:-/etc/z2r/profile.lock}"
-  [ -f "$file" ] || return 0
-  local first second
-  while read -r pr first second _; do
-    case "$pr" in ""|"#"*|*[!0-9]*) continue ;; esac
-    if [ -n "$second" ]; then
-      printf -v "_STORE_${pr}_${first}" '%s' "$second"
-    elif [ -n "$first" ]; then
-      printf -v "_STORE_${pr}_tls" '%s' "$first"
-    fi
-  done < "$file"
 }
 
 _profile_cur_cached() {  # $1=profile $2=proto $3=L|M -> REPLY
   local var stored
-  var="_STORE_$1_$2"
+  var="_$3VAL_$1_$2"
   stored="${!var:-auto}"
-  if [ "$stored" = "auto" ]; then
-    var="_$3VAL_$1_$2"
-    stored="${!var:-auto}"
-  fi
   case "$stored" in
     ""|auto) REPLY="auto" ;;
     0|skip) REPLY="0" ;;
@@ -377,7 +361,7 @@ _service_apply_restart() {
 }
 
 strategy_locks_status_text() {
-  if [ -s "$ORCH_DIR/locked.tsv" ] || [ -s "$ORCH_DIR/locked.manual.tsv" ] || [ -s "$(profile_state_file)" ]; then
+  if [ -s "$ORCH_DIR/locked.tsv" ] || [ -s "$ORCH_DIR/locked.manual.tsv" ]; then
     echo "Есть"
   else
     echo "Нет"
