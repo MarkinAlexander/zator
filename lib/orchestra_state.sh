@@ -525,7 +525,7 @@ EOF
 # Формат: profile<TAB>имя, нет строки = глобальный блоб. Файл читает locked.lua
 # (TTL-кэш 2с) — вкл/выкл переопределения применяется без рестарта nfqws2.
 ORCH_BLOB_FILE="${ORCH_BLOB_FILE:-$ORCH_DIR/blob_override.tsv}"
-Z2R_BLOB_PROFILES="${Z2R_BLOB_PROFILES:-1 2 3 8}"
+Z2R_BLOB_PROFILES="${Z2R_BLOB_PROFILES:-1 2 3 4 8}"
 Z2R_BLOB_SLOT_PREFIX="${Z2R_BLOB_SLOT_PREFIX:-z2r_prof_}"
 Z2R_BLOB_FAKE_DIR="${Z2R_BLOB_FAKE_DIR:-${ZATOR_ROOT:-/opt/zator}/files/fake}"
 

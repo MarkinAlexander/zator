@@ -477,7 +477,7 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 | `setting` | параметры | Что делает |
 | --- | --- | --- |
 | `tls_blob` | `fake_default_tls` \| `tls_*.bin` \| `custom_tls.bin` | смена TLS-блоба: `fake_default_tls` — вернуться на встроенный (декларация `--blob=maxru:@...` сохраняется для обратного переключения); файл — активировать внешний (`fake_default_tls`→`maxru` в ссылках стратегий + замена пути, path-agnostic `zapret2\|zator`) |
-| `tls_blob_profile` | `profile=1\|2\|3\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена) |
+| `tls_blob_profile` | `profile=1\|2\|3\|4\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена) |
 | `wg_blob` | `value=<wg_initial_fake_*>` | замена `--blob=fakewgblob:@.../<файл>` |
 | `wg_repeats` | `value=<2..99>` | замена `blob=fakewgblob:repeats=N` |
 | `wg_state` | `value=0\|1` | вкл/выкл стратегии WG (`--skip` перед `--filter-l7=wireguard`) |

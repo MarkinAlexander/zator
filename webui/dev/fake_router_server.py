@@ -971,7 +971,7 @@ def config_tls_blob_current(cfg_text):
     return m.group(1) if m else ""
 
 
-BLOB_PROFILE_IDS = ("1", "2", "3", "8")
+BLOB_PROFILE_IDS = ("1", "2", "3", "4", "8")
 
 
 def config_tls_blob_slot_file(cfg_text, profile):
