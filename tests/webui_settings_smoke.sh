@@ -118,6 +118,14 @@ assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" 'update_check' "
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'api_update_check' "_lib.sh без api_update_check"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")" 'deploy_latest_write_cache' "api_update_check не пишет кэш latest.env"
 assert_contains "$(cat "$REPO_DIR/lib/deploy.sh")" 'z2r.conf' "deploy_releases_base не учитывает RAW_URL из z2r.conf (CGI без env лаунчера)"
+
+# raw-установки без version.env: бутстрап датой коммита ветки + «неизвестно»
+# в панели вместо пустых полей.
+assert_contains "$(cat "$REPO_DIR/lib/deploy.sh")" 'deploy_version_bootstrap' "deploy.sh без бутстрапа version.env"
+grep -q 'deploy_version_bootstrap "\$commit_date"' "$REPO_DIR/z2r.sh" || fail "z2r.sh не вызывает бутстрап version.env"
+assert_contains "$(cat "$REPO_DIR/lib/deploy.sh")" "grep -q .\\^ZATOR_DATE=" "бутстрап не защищён существующий version.env"
+_lib_raw="$(cat "$REPO_DIR/webui/cgi-bin/_lib.sh")"
+assert_contains "$_lib_raw" 'v_zator_date="неизвестно"' "state.cgi без fallback для пустой версии zator"
 assert_contains "$app_js" 'update_check' "webui-src не вызывает update_check"
 assert_contains "$app_js" 'update-check-btn' "webui-src без кнопки проверки обновлений"
 assert_contains "$app_js" 'runUpdateCheck' "webui-src без обработчика проверки обновлений"

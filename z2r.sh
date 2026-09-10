@@ -2456,6 +2456,11 @@ else
 else
     echo -e "${yellow}zeefeer обновлен (UTC +0): $commit_date ${plain}"
  fi
+ # raw-установки без version.env: заполняем датой коммита ветки,
+ # чтобы шапка меню и панель не показывали пустые версии.
+ if type deploy_version_bootstrap >/dev/null 2>&1; then
+   deploy_version_bootstrap "$commit_date" || true
+ fi
 fi
 
 #Выполнение общего для всех ОС кода с ответвлениями под ОС

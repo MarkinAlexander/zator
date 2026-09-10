@@ -147,10 +147,31 @@ deploy_fetch_release_meta() {
   [ -n "$DEPLOY_META_RELEASE" ]
 }
 
+# Пофайловые (raw) установки/обновления живут без version.env: шапка меню и
+# панель показывают пустые версии, сравнивать обновления не с чем. Заполняем
+# один раз датой коммита ветки (её z2r.sh и так получает для «zeefeer
+# обновлен»). Существующий version.env не трогаем; дата неизвестна — пропуск.
+deploy_version_bootstrap() {
+  local date="${1:-}" vf
+  [ -n "$date" ] || return 0
+  vf="$DEPLOY_VERSION_FILE"
+  if [ -f "$vf" ] && grep -q '^ZATOR_DATE=' "$vf"; then
+    return 0
+  fi
+  mkdir -p "$DEPLOY_CACHE_DIR"
+  {
+    printf 'ZATOR_VERSION="branch"\nZATOR_DATE="%s"\n' "$date"
+    if [ -e "$ZATOR_ROOT/webui/run-webui.sh" ]; then
+      printf 'WEBUI_VERSION="branch"\nWEBUI_DATE="%s"\n' "$date"
+    fi
+    printf 'TRACKING="latest"\n'
+  } > "${vf}.tmp.$$" && mv -f "${vf}.tmp.$$" "$vf"
+  return 0
+}
+
 # Перезапись кэша latest.env из DEPLOY_META_* (заполняются
 # deploy_fetch_release_meta или точечным фетчем веб-панели).
-deploy_latest_write_cache() {
-  mkdir -p "$DEPLOY_CACHE_DIR"
+deploy_latest_write_cache() {  mkdir -p "$DEPLOY_CACHE_DIR"
   cat > "${DEPLOY_LATEST_FILE}.tmp" <<EOF
 LATEST_RELEASE="$DEPLOY_META_RELEASE"
 LATEST_BUILD_DATE="$DEPLOY_META_BUILD_DATE"
