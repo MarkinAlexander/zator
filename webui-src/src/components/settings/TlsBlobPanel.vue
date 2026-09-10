@@ -60,6 +60,7 @@ const PROFILE_ITEMS = [
   { id: '1', title: 'Профиль 1 — YouTube TCP' },
   { id: '2', title: 'Профиль 2 — Googlevideo' },
   { id: '3', title: 'Профиль 3 — RKN' },
+  { id: '4', title: 'Профиль 4 — Discord (TCP)' },
   { id: '8', title: 'Профиль 8 — безразборный TLS' },
 ]
 
