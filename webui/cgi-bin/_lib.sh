@@ -681,6 +681,14 @@ api_state() {
     v_webui_ver="$(deploy_version_field WEBUI_VERSION)"
     v_webui_date="$(deploy_version_field WEBUI_DATE)"
     v_tracking="$(deploy_version_field TRACKING)"
+    # raw-установки до первого запуска z2r.sh живут без version.env:
+    # пустые поля в панели выглядят как поломка, показываем «неизвестно»
+    # (значения появится после deploy_version_bootstrap или tar-деплоя).
+    [ -n "$v_zator_ver" ] || v_zator_ver="неизвестно"
+    [ -n "$v_zator_date" ] || v_zator_date="неизвестно"
+    [ -n "$v_webui_ver" ] || v_webui_ver="неизвестно"
+    [ -n "$v_webui_date" ] || v_webui_date="неизвестно"
+    [ -n "$v_tracking" ] || v_tracking="latest"
     v_lz_date="$(deploy_latest_field LATEST_ZATOR_DATE)"
     v_lw_date="$(deploy_latest_field LATEST_WEBUI_DATE)"
     local v_zs v_ws v_lz v_lw
