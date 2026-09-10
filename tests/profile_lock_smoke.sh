@@ -43,6 +43,9 @@ export ORCH_DIR="$ROOT/extra_strats/cache/orchestra"
 export ORCH_LOCK_FILE="$ORCH_DIR/locked.tsv"
 export Z2R_PROFILE_STATE_FILE="$TMP_DIR/legacy_profile.lock"
 export ZAPRET2_INIT="$ROOT/init.d/sysv/zapret2"
+# orch_scope_validate берёт диапазон из ${CONFIG_FILE:-} — без экспорта смок
+# машинно-зависим (локально /opt нет, на VM — чужой живой конфиг).
+export CONFIG_FILE="$CFG"
 
 mkdir -p "$ORCH_DIR" "$ROOT/init.d/sysv"
 tr -d '\r' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g" -e "s#/opt/zator#$ROOT#g" > "$CFG"
@@ -485,6 +488,18 @@ out="$(profile_apply_all "$CFG" 2>/dev/null)"
 assert_contains "$out" 'Пропуск' "out-of-range DNS lock must be skipped with a notice"
 clean_tmp="${ORCH_LOCK_FILE}.dns.$$"
 awk -F '\t' '!($1=="10" && $2=="udp")' "$ORCH_LOCK_FILE" > "$clean_tmp" && mv -f "$clean_tmp" "$ORCH_LOCK_FILE"
+
+# Доменные локи (custom RKN) подбираются в диапазоне профиля 3 (43):
+# 28 проходит молча, вне диапазона — только реально невалидный номер.
+printf 'ru.xhamster.com\ttls\t28\n' >> "$ORCH_LOCK_FILE"
+out="$(profile_apply_all "$CFG" 2>/dev/null)"
+assert_not_contains "$out" 'ru.xhamster.com' "in-range domain lock must not produce skip noise"
+grep -Eq '^ru[.]xhamster[.]com[[:space:]]+tls[[:space:]]+28$' "$ORCH_LOCK_FILE" || fail "domain lock row was dropped by apply_all"
+printf 'bad.example\ttls\t99\n' >> "$ORCH_LOCK_FILE"
+out="$(profile_apply_all "$CFG" 2>/dev/null)"
+assert_contains "$out" 'bad.example.*вне диапазона' "out-of-range domain lock must be flagged"
+clean_tmp="${ORCH_LOCK_FILE}.dom.$$"
+awk -F '\t' '!($1=="ru.xhamster.com" || $1=="bad.example")' "$ORCH_LOCK_FILE" > "$clean_tmp" && mv -f "$clean_tmp" "$ORCH_LOCK_FILE"
 
 # снапшот главного меню: лимит профиля 10 и состояние тумблера
 menu_config_snapshot "$CFG"
