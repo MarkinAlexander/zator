@@ -32,6 +32,7 @@ npm install
 npm run dev     # dev-сервер Vite (http://127.0.0.1:5173) с hot-reload
 npm run build   # сборка в ../webui + простановка ?v=<sha256>
 npm run check   # проверка типов vue-tsc (без сборки)
+npm run pack    # единый архив развёртывания zator-контента (см. ниже)
 ```
 
 ## Разработка с фейк-сервером (без роутера)
@@ -85,6 +86,37 @@ npm run check   # проверка типов vue-tsc (без сборки)
 
 Проверка на живом роутере: скопируйте три собранных файла в
 `/opt/zator/webui/www/` и обновите страницу — смена `?v=` сама сбросит кэш.
+
+### Архивы развёртывания (npm run pack)
+
+`scripts/pack-zator-tar.mjs` собирает в `dist/` три варианта одним прогоном:
+`zator-core.tar.gz` (весь zator-контент без webui), `zator-webui.tar.gz`
+(только панель), `zator-full.tar.gz` (union). Пути в архиве относительно
+`/opt/zator`, спецзаписи: `_root/z2r.sh` → `/opt/z2r.sh` и
+`_payload/{config.default,Entware/keenetic-policy.sh,blockcheck2.d/...}` →
+`/opt/zator/.deploy-payload/` (офлайн-источник, в `/opt/zapret2` автоматически
+не ставится). Текст нормализован в LF, права 0755/0644 зашиты в заголовки tar,
+сборка детерминирована (при фиксированном `--version`).
+
+Рядом с каждым архивом: `.sha256` (формат `sha256sum -c`), `.manifest.json`,
+`.manifest.tsv` (шелл-читаемый `path|dest|class|sha256|size|exec`); копии
+`version.env` и манифестов лежат внутри архива в
+`extra_strats/cache/deploy/`. Класс `keep-if-exists` (netrogat.txt,
+TCP_Custom.txt, substrings-листы, custom_tls.bin) — основа защит при
+развёртывании: существующие файлы пользователя не перезаписываются. При
+`--variant=all` пишется ещё `latest.json` — указатель сборки с размерами
+архивов для проверки свободного места на устройстве.
+
+Флаги: `--variant=core|webui|full|all` (дефолт all), `--version=<tag>`
+(дефолт `deploy-<UTC таймстамп>`), `--out <dir>`, `--repo owner/name`
+(URL в latest.json). Релизы на GitHub собирает workflow
+`.github/workflows/deploy-tar.yml` (только workflow_dispatch): rolling-тег
+`latest` + неизменяемые номерные. Развёртывание на устройстве делает
+`lib/deploy.sh` (меню п.5 z2r) и лаунчер `z2r`; после распаковки webui нужен
+`webui_fix_interpreters` (шебанг в репо портабельный, на Keenetic требуется
+`/opt/bin/bash`) — deploy делает это сам.
+
+Runtime-состояние (кэши, `autohostlist.txt`) в архивы не попадает.
 
 ## Структура
 

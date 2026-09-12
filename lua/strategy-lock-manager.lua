@@ -324,10 +324,11 @@ local function slm_load_skip_pass_ips()
         local file = io.open("/opt/zator/" .. filename, "r") or io.open(filename, "r")
         if file then
             for line in file:lines() do
-                -- Skip empty lines and comments
-                line = line:match("^%s*(.-)%s*$")  -- trim
-                if line and #line > 0 and not line:match("^#") then
-                    local start_ip, end_ip = slm_parse_cidr(line)
+                -- Lua 5.4 (новые сборки nfqws2) запрещает присваивание
+                -- переменной цикла, тримим в отдельную переменную
+                local trimmed = line:match("^%s*(.-)%s*$")
+                if trimmed and #trimmed > 0 and not trimmed:match("^#") then
+                    local start_ip, end_ip = slm_parse_cidr(trimmed)
                     if start_ip and end_ip then
                         table.insert(SLM_SKIP_PASS_IP_RANGES, {start_ip, end_ip})
                         total_ranges = total_ranges + 1

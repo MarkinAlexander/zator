@@ -4,13 +4,14 @@ import {
   fallbackSettings, modeSettings, ports, provider, settingsLoaded,
   tlsBlobSettings, udpGamesSettings, wgBlobSettings, wgStateSettings,
 } from './settings'
-import { locks, scope, scopes, status, statusLoaded } from './status'
+import { locks, scope, scopes, status, statusLoaded, versionInfo } from './status'
 
 // Одна агрегирующая загрузка вместо ~15 отдельных CGI: state.cgi читает
 // всё состояние за один процесс на роутере.
 export async function fetchAndApplyState() {
   const payload = await fetchState(scope.value)
   status.value = payload.status
+  versionInfo.value = payload.version
   locks.value = payload.status.profiles || []
   scopes.value = payload.scopes
   tlsBlobSettings.value = payload.tls_blob

@@ -145,14 +145,39 @@ export interface ApplyResult {
   check?: CheckPayload
 }
 
+export interface UpdateCheckResult {
+  update_available: boolean
+  release?: string
+  latest_zator_date?: string
+  latest_webui_date?: string
+  checked_at?: string
+  error?: string
+}
+
 export interface DomainsImportResult {
   added?: number
   duplicates?: number
   skipped?: number
 }
 
+export interface VersionInfo {
+  zapret2_version: string
+  zator_version: string
+  zator_date: string
+  webui_version: string
+  webui_date: string
+  tracking: string
+  update_available: boolean
+  latest_zator_date: string
+  latest_webui_date: string
+  config_date: string
+  config_default_date: string
+  config_update_pending: boolean
+}
+
 export interface StatePayload {
   status: StatusPayload
+  version: VersionInfo
   scopes: ScopesPayload
   tls_blob: TlsBlobSettings
   wg_blob: WgBlobSettings

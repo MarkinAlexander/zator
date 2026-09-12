@@ -125,6 +125,7 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
 ```jsonc
 {
   "status":   { /* payload status.cgi целиком */ },
+  "version":  { /* см. ниже */ },
   "scopes":   { /* payload scopes.cgi целиком (client_scopes_json) */ },
   "tls_blob": { /* settings.cgi без setting= */ },
   "wg_blob":  { /* settings.cgi?setting=wg_blob */ },
@@ -140,6 +141,34 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
   "ports":    { /* settings.cgi?setting=ports */ },
   "provider": { /* settings.cgi?setting=provider */ },
   "backups":  { /* GET backups.cgi (список) */ }
+}
+```
+
+Секция `version` — версия nfqws2 (парсится из `nfqws2 --version`
+хелпером `zapret2_version_short` в `lib/config.sh`, короткий вид
+`v1.0.5.1-reasm-fix`, хеш и lua_compat_ver отбрасываются), установленная
+версия zator/Web-панели (из
+`/opt/zator/extra_strats/cache/deploy/version.env`, пишется tar-развёртыванием)
+и флаг наличия обновления (сравнение sha с `latest.env`, который обновляет
+лаунчер `z2r` или п.5 меню при проверке). `zapret2_version` приходит всегда,
+когда найден бинарник (пустая строка — бинарника нет). Без `lib/deploy.sh`
+на устройстве секция приходит с `"zator_version":"unknown"` и
+`"update_available":false`:
+
+```jsonc
+"version": {
+  "zapret2_version": "v1.0.5.1-reasm-fix",  // из nfqws2 --version (github/self-built)
+  "zator_version": "deploy-20260901-1200",
+  "zator_date": "2026-09-01 12:00",
+  "webui_version": "deploy-20260901-1200",
+  "webui_date": "2026-09-01 12:00",
+  "tracking": "latest",          // latest | <тег релиза> — пин автообновления лаунчера
+  "update_available": false,
+  "latest_zator_date": "",       // даты доступного обновления (пусто — проверки не было)
+  "latest_webui_date": "",
+  "config_date": "2026-09-01 12:00:37 UTC",       // дата «# Last modified» живого config
+  "config_default_date": "2026-09-05 08:00:00 UTC", // дата эталонного config.default
+  "config_update_pending": true    // true — config.default новее живого config (применение: CLI п.5 -> п.7)
 }
 ```
 
@@ -417,6 +446,22 @@ fallback `rr1---sn-5goeenes.googlevideo.com`).
 
 ```jsonc
 { "provider": "MTS - Moscow" }   // "Не определён" при пустом кэше
+```
+
+**Проверка обновлений** (`GET ?setting=update_check`) — единственное сетевое
+действие панели: одиночный короткий fetch `latest.json` (curl 3с/8с, wget
+fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env` и возвращает
+свежий вердикт. Установка/обновление остаются в CLI (п.5/лаунчер):
+
+```jsonc
+{
+  "update_available": false,      // сравнение SHA из version.env и latest.env
+  "release": "stable-20260910-1450",
+  "latest_zator_date": "2026-09-10 14:50",
+  "latest_webui_date": "2026-09-10 14:50",
+  "checked_at": "2026-09-10 15:00",
+  "error": ""                     // "Не удалось связаться с сервером обновлений"
+}                                 // при сетевом сбое (кэш не трогается)
 ```
 
 ### POST — применение настроек

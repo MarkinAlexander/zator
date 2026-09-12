@@ -459,7 +459,10 @@ config_mode_text() {
       fi
       ;;
     reasm_disable)
-      if sed -n '/^NFQWS2_OPT="/,/^"$/p' "$cfg" | grep -q '^[[:space:]]*--reasm-disable'; then
+      # через переменную: sed | grep -q под pipefail ловит SIGPIPE на медленном железе
+      local reasm_block
+      reasm_block="$(sed -n '/^NFQWS2_OPT="/,/^"$/p' "$cfg")"
+      if printf '%s\n' "$reasm_block" | grep -q '^[[:space:]]*--reasm-disable'; then
         echo "включено"
       else
         echo "выключено"
@@ -501,10 +504,130 @@ config_mode_text() {
   esac
 }
 
+# Сводка платформы для шапки меню. Keenetic: ndmc show version (description
+# = модель, title = прошивка); Netcraze отличается содержимым /bin/ndmc;
+# Merlin: nvram productid; OpenWrt: /etc/openwrt_release; VPS: PRETTY_NAME.
+platform_summary_text() {
+  local arch model fw verout id ver
+  arch="$(uname -m 2>/dev/null)"
+  if command -v ndmc >/dev/null 2>&1; then
+    if grep -q netcraze /bin/ndmc 2>/dev/null; then
+      printf 'Netcraze (%s)' "${arch:-неизвестно}"
+      return 0
+    fi
+    verout="$(ndmc -c 'show version' 2>/dev/null)"
+    model="$(printf '%s\n' "$verout" | sed -n 's/^[[:space:]]*description:[[:space:]]*//p' | head -n1)"
+    fw="$(printf '%s\n' "$verout" | sed -n 's/^[[:space:]]*title:[[:space:]]*//p' | head -n1)"
+    if [ -n "$model" ]; then
+      printf '%s' "$model"
+      [ -n "$fw" ] && printf ', прошивка %s' "$fw"
+    else
+      printf 'Keenetic (%s)' "${arch:-неизвестно}"
+    fi
+    return 0
+  fi
+  if [ -d /jffs ] && command -v nvram >/dev/null 2>&1; then
+    model="$(nvram get productid 2>/dev/null)"
+    if [ -n "$model" ]; then
+      printf 'Asus Merlin %s (%s)' "$model" "$arch"
+    else
+      printf 'Asus Merlin (%s)' "$arch"
+    fi
+    return 0
+  fi
+  if [ -f /etc/openwrt_release ]; then
+    id="$(sed -n 's/^DISTRIB_ID=//p' /etc/openwrt_release | head -n1 | tr -d "'")"
+    ver="$(sed -n 's/^DISTRIB_RELEASE=//p' /etc/openwrt_release | head -n1 | tr -d "'")"
+    printf '%s %s (%s)' "${id:-OpenWrt}" "$ver" "$arch"
+    return 0
+  fi
+  if [ -f /etc/os-release ]; then
+    fw="$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | head -n1 | tr -d '"')"
+    if [ -n "$fw" ]; then
+      printf '%s (%s)' "$fw" "$arch"
+    else
+      printf 'Linux (%s)' "$arch"
+    fi
+    return 0
+  fi
+  model="$(sed -n 's/^system type[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo 2>/dev/null | head -n1)"
+  if [ -n "$model" ]; then
+    printf 'Keenetic, %s (%s)' "$model" "$arch"
+  else
+    printf '%s (%s)' "$(uname -s 2>/dev/null)" "$arch"
+  fi
+}
+
+platform_uptime_text() {
+  local up d h m out=""
+  up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+  [ -n "$up" ] || { printf 'неизвестно'; return 0; }
+  d=$((up / 86400))
+  h=$(((up % 86400) / 3600))
+  m=$(((up % 3600) / 60))
+  [ "$d" -gt 0 ] && out="${d}д "
+  printf '%s%sч %sм' "$out" "$h" "$m"
+}
+
+platform_ram_text() {
+  local total avail
+  total="$(awk '/^MemTotal:/{print int($2/1024); exit}' /proc/meminfo 2>/dev/null)"
+  avail="$(awk '/^MemAvailable:/{print int($2/1024); exit}' /proc/meminfo 2>/dev/null)"
+  [ -n "$avail" ] || avail="$(awk '/^MemFree:/{print int($2/1024); exit}' /proc/meminfo 2>/dev/null)"
+  if [ -n "$total" ] && [ -n "$avail" ]; then
+    printf '%s МБ, свободно %s МБ' "$total" "$avail"
+  else
+    printf 'неизвестно'
+  fi
+}
+
 config_last_modified() {
   local header
   header="$(sed -n 's/^# Last modified:[[:space:]]*//p' "$1" 2>/dev/null | head -n1 | tr -d '\r')"
   printf '%s\n' "${header:-Неизвестно}"
+}
+
+config_default_last_modified() {
+  config_last_modified "${ZAPRET2_ROOT:-/opt/zapret2}/config.default"
+}
+
+# Живой config — копия эталона, даты «# Last modified» у них равны сразу
+# после применения; sed-правки меню заголовок не трогают. Расхождение дат
+# означает, что config.default новее и не применён.
+# rc=0 — эталон новее, 1 — даты равны/эталон старее, 2 — не определить.
+config_update_pending() {
+  local live ref
+  live="$(sed -n 's/^# Last modified:[[:space:]]*//p' "${ZAPRET2_ROOT:-/opt/zapret2}/config" 2>/dev/null | head -n1 | tr -d '\r')"
+  ref="$(sed -n 's/^# Last modified:[[:space:]]*//p' "${ZAPRET2_ROOT:-/opt/zapret2}/config.default" 2>/dev/null | head -n1 | tr -d '\r')"
+  case "$live" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 2 ;; esac
+  case "$ref" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ *) ;; *) return 2 ;; esac
+  [ "$ref" \> "$live" ]
+}
+
+# Короткая версия установленного nfqws2 (zapret2) из --version:
+# 'v1.0.5.1-reasm-fix' (хеш в скобках и lua_compat_ver отбрасываются),
+# self-built 'self-built Aug 25 2026 17:08:09'. Пустая строка, если
+# бинарника нет. Никогда не падает (вызывается из шапки меню и WebUI).
+zapret2_version_short() {
+  local bin out v
+  bin="${ZAPRET2_ROOT:-/opt/zapret2}/nfq2/nfqws2"
+  [ -x "$bin" ] || bin="$(command -v nfqws2 2>/dev/null)"
+  [ -n "$bin" ] || return 0
+  out="$("$bin" --version 2>/dev/null | head -n 1)"
+  case "$out" in
+    *"github version "*)
+      v="${out##*github version }"
+      v="${v%% (*}"
+      v="${v%% lua_compat*}"
+      printf '%s' "${v% }"
+      ;;
+    *"self-built version "*)
+      v="self-built ${out##*self-built version }"
+      v="${v%% lua_compat*}"
+      printf '%s' "$v"
+      ;;
+  esac
+  return 0
 }
 
 menu_config_snapshot() {
@@ -1287,7 +1410,22 @@ profile_config_apply_state() {
       fi
       ;;
     *)
-      max="$(config_profile_max_strategy "$profile" "$cfg")"
+      # Кастомные домены (custom RKN, ключ — hostname) подбираются в
+      # диапазоне профиля 3, как в orch_scope_validate; числовые профили —
+      # в своём собственном.
+      local max_profile="$profile"
+      if ! printf '%s' "$profile" | grep -Eq '^[0-9]+$'; then
+        if printf '%s' "$profile" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
+          max_profile=3
+        else
+          max_profile=""
+        fi
+      fi
+      if [ -n "$max_profile" ]; then
+        max="$(config_profile_max_strategy "$max_profile" "$cfg")"
+      else
+        max=""
+      fi
       if ! printf '%s' "$max" | grep -Eq '^[1-9][0-9]*$' || [ "$normalized" -gt "$max" ]; then
         echo "Пропуск сохранённого состояния профиля $profile: стратегия $normalized вне диапазона."
         return 0
@@ -1342,28 +1480,31 @@ profile_apply_all() {
   local file profile proto state rest rc
 
   cfg="$(config_get_file "$cfg")" || return 0
-  file="$(profile_state_file)"
-  [ -f "$file" ] || return 0
-
-  while read -r profile proto state rest; do
-    case "$profile" in
-      ""|\#*) continue ;;
-    esac
-    if [ -z "$state" ]; then
-      state="$proto"
-      proto="$(config_profile_proto_list "$profile")"
-    fi
-    if profile_config_apply_state "$profile" "$proto" "$state" "$cfg"; then
-      continue
-    else
-      rc=$?
-    fi
-    if [ "$rc" -eq 2 ]; then
-      echo "Пропуск сохранённого состояния профиля $profile: некорректное состояние '$state'."
-      continue
-    fi
-    return "$rc"
-  done < "$file"
+  # Локи профилей — единственный источник: locked.tsv (1-7, 10) и
+  # locked.manual.tsv (8/9 fallback). Строка «auto» в файлах не хранится
+  # (auto = отсутствие строки), поэтому применяется только явное состояние.
+  for file in "$ORCH_LOCK_FILE" "$ORCH_DIR/locked.manual.tsv"; do
+    [ -f "$file" ] || continue
+    while read -r profile proto state rest; do
+      case "$profile" in
+        ""|\#*) continue ;;
+      esac
+      if [ -z "$state" ]; then
+        state="$proto"
+        proto="$(config_profile_proto_list "$profile")"
+      fi
+      if profile_config_apply_state "$profile" "$proto" "$state" "$cfg"; then
+        continue
+      else
+        rc=$?
+      fi
+      if [ "$rc" -eq 2 ]; then
+        echo "Пропуск сохранённого состояния профиля $profile: некорректное состояние '$state'."
+        continue
+      fi
+      return "$rc"
+    done < "$file"
+  done
   return 0
 }
 

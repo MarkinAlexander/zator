@@ -2720,6 +2720,20 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self._send_json({
                     "status": self.state.build_status(requested_scope),
+                    "version": {
+                        "zapret2_version": "v1.0.5.1-reasm-fix",
+                        "zator_version": "deploy-20260901-1200",
+                        "zator_date": "2026-09-01 12:00",
+                        "webui_version": "deploy-20260901-1200",
+                        "webui_date": "2026-09-01 12:00",
+                        "tracking": "latest",
+                        "update_available": False,
+                        "latest_zator_date": "",
+                        "latest_webui_date": "",
+                        "config_date": "2026-09-01 12:00:37 UTC",
+                        "config_default_date": "2026-09-05 08:00:00 UTC",
+                        "config_update_pending": True,
+                    },
                     "scopes": self._build_scopes(),
                     "tls_blob": self.state.build_tls_blob_settings(),
                     "wg_blob": self.state.build_wg_blob_settings(),
@@ -2960,6 +2974,16 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 elif setting == "provider":
                     self._log("GET {0} | provider settings".format(parsed.path))
                     self._send_json(self.state.build_provider_settings())
+                elif setting == "update_check":
+                    self._log("GET {0} | update check".format(parsed.path))
+                    self._send_json({
+                        "update_available": False,
+                        "release": "stable-fake",
+                        "latest_zator_date": "",
+                        "latest_webui_date": "",
+                        "checked_at": "1970-01-01 00:00",
+                        "error": "",
+                    })
                 else:
                     self._log("GET {0} | tls_blob settings".format(parsed.path))
                     self._send_json(self.state.build_tls_blob_settings())

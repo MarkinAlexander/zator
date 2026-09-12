@@ -57,7 +57,12 @@ curl_calls() {
 }
 
 stale_touch() {
-  touch -d '30 days ago' "$1" 2>/dev/null || touch -t 202001010000 "$1"
+  touch -d '30 days ago' "$1" 2>/dev/null || touch -t 202001010000 "$1" 2>/dev/null \
+    || python3 - "$1" <<'PYEOF' 2>/dev/null
+import os, sys, time
+old = time.time() - 30 * 86400
+os.utime(sys.argv[1], (old, old))
+PYEOF
 }
 
 cat > "$TMP_DIR/remote_ok.txt" <<'EOF'

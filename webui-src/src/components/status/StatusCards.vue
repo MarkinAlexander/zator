@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { RouteLocationRaw } from 'vue-router'
 import StatCard from '../ui/StatCard.vue'
-import { status } from '../../stores/status'
+import { status, versionInfo } from '../../stores/status'
 import { fallbackSettings } from '../../stores/settings'
+import { fetchAndApplyState } from '../../stores/state'
+import { fetchSetting } from '../../api/endpoints'
+import { showToast } from '../../stores/toast'
 
 interface CardDef {
   label: string
@@ -12,6 +15,32 @@ interface CardDef {
   subText?: string
   to?: RouteLocationRaw
   cli?: string
+  compact?: boolean
+  cornerAction?: () => void
+  cornerBusy?: boolean
+  cornerTitle?: string
+}
+
+const updateChecking = ref(false)
+
+// Кнопка видна только когда панель не видит обновлений: если обновление
+// или новый конфиг уже показаны — пользователь их и так увидит.
+async function runUpdateCheck() {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  try {
+    const res = await fetchSetting.update_check()
+    if (res.error) {
+      showToast(res.error, 'error')
+      return
+    }
+    await fetchAndApplyState()
+    showToast(res.update_available ? 'Есть обновление' : 'Обновлений нет', res.update_available ? 'info' : 'success')
+  } catch {
+    showToast('Не удалось проверить обновления', 'error')
+  } finally {
+    updateChecking.value = false
+  }
 }
 
 const cards = computed<CardDef[]>(() => {
@@ -35,8 +64,41 @@ const cards = computed<CardDef[]>(() => {
   const fallbackState = fallbackSettings.value?.state ?? '—'
   const dnsProfile = (data.profiles || []).find((profile) => profile.is_dns_desync)
 
+  const ver = versionInfo.value
+  const verParts: string[] = []
+  if (ver?.zator_date) verParts.push(`zator от ${ver.zator_date}`)
+  if (ver?.webui_date) verParts.push(`Web-панель от ${ver.webui_date}`)
+  const cfgPending = ver?.config_update_pending ?? false
+  const verSub = ver?.update_available
+    ? (verParts.length ? verParts.join('\n') : undefined)
+    : cfgPending
+      ? 'Для применения: п.5 -> п.7 в меню z2r'
+      : (ver?.webui_date ? `Web-панель от ${ver.webui_date}` : undefined)
+  let verValue = ver?.zator_date || '—'
+  let verClass = ''
+  if (ver?.update_available) {
+    verValue = 'Есть обновление'
+    verClass = 'info'
+  } else if (cfgPending) {
+    verValue = 'Есть новый конфиг'
+    verClass = 'info'
+  }
+
+  const z2Parts: string[] = []
+  if (ver?.zapret2_version) z2Parts.push(ver.zapret2_version)
+  if (ver?.config_date && ver.config_date !== 'Неизвестно') {
+    z2Parts.push(`config от ${ver.config_date.slice(0, 10)}`)
+    if (ver.config_update_pending && ver.config_default_date) {
+      z2Parts.push(`есть новая версия от ${ver.config_default_date.slice(0, 10)}`)
+    }
+  }
+
   return [
-    { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad' },
+    {
+      label: 'Версия zator', value: verValue, stateClass: verClass, subText: verSub, cli: 'п.5', compact: verClass === '',
+      ...(verClass === '' ? { cornerAction: runUpdateCheck, cornerBusy: updateChecking.value, cornerTitle: 'Проверить обновления' } : {}),
+    },
+    { label: 'zapret2', value: data.zapret2_running ? 'Запущен' : 'Остановлен', stateClass: data.zapret2_running ? 'ok' : 'bad', subText: z2Parts.length ? z2Parts.join('\n') : undefined },
     { label: 'Локи стратегий', value: data.strategy_locks_status ?? '—', to: '/strategies' },
     { label: 'Client scopes', value: scopeMode, stateClass: scopeMode === 'mark' ? 'ok' : '', subText: scopeSub, to: scopeTarget },
     { label: 'Безразборный режим', value: fallbackState, stateClass: fallbackState === 'включен' ? 'ok' : '', to: '/settings/fallback' },

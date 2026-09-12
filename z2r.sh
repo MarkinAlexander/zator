@@ -34,7 +34,16 @@ Bcyan='\033[46m'
 z2r_github_commit_date() {
   local path="$1" timeout="${2:-10}"
   [ "${Z2R_OFFLINE:-0}" != "1" ] || return 0
-  curl -s --max-time "$timeout" "https://api.github.com/repos/AloofLibra/zator/commits?path=${path}&per_page=1" \
+  # форк-aware: репозиторий и ветка из Z2R_PROJECT_RAW_BASE (прокидывается лаунчером),
+  # иначе репозиторий автора и его ветка по умолчанию
+  local api_repo="AloofLibra/zator" api_sha=""
+  case "${Z2R_PROJECT_RAW_BASE:-}" in
+    https://raw.githubusercontent.com/*/*/*)
+      api_repo="$(printf '%s' "$Z2R_PROJECT_RAW_BASE" | cut -d/ -f4,5)"
+      api_sha="&sha=$(printf '%s' "$Z2R_PROJECT_RAW_BASE" | cut -d/ -f6)"
+      ;;
+  esac
+  curl -s --max-time "$timeout" "https://api.github.com/repos/${api_repo}/commits?path=${path}${api_sha}&per_page=1" \
     | grep '"date"' | head -n1 | cut -d'"' -f4
 }
 
@@ -45,6 +54,7 @@ Z2R_INSTALLER_URL="${Z2R_INSTALLER_URL:-${Z2R_PROJECT_RAW_BASE}/z2r.sh}"
 ZAPRET2_UPSTREAM_RAW_BASE="${ZAPRET2_UPSTREAM_RAW_BASE:-https://raw.githubusercontent.com/bol-van/zapret2/master}"
 ZAPRET2_UPSTREAM_MIRROR_BASE="${ZAPRET2_UPSTREAM_MIRROR_BASE:-https://git.px.rkn.quest/zapret2/plain}"
 ZAPRET2_RELEASE_BASE="${ZAPRET2_RELEASE_BASE:-https://github.com/bol-van/zapret2/releases/download}"
+ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/MarkinAlexander/zapret2/releases/download}"
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
@@ -109,6 +119,21 @@ z2r_download_project_file() {
       echo -e "${red}В архиве отсутствует файл проекта: $rel${plain}" >&2
       return 1
     fi
+  fi
+
+  # Локальный payload из tar-развёртывания (config.default, keenetic-policy,
+  # blockcheck-инпуты) — офлайн-источник перед сетью.
+  if [ -n "${DEPLOY_PAYLOAD_DIR:-}" ] && [ -f "$DEPLOY_PAYLOAD_DIR/$rel" ]; then
+    mkdir -p "$(dirname "$dest")"
+    cp -f "$DEPLOY_PAYLOAD_DIR/$rel" "$tmp" || return 1
+    mv -f "$tmp" "$dest"
+    return 0
+  fi
+
+  # Офлайн-сборка с tar-деплоем: установленное дерево уже актуально,
+  # локальный файл — источник, сеть не трогаем.
+  if [ "${Z2R_OFFLINE:-0}" = "1" ] && [ -f "$dest" ]; then
+    return 0
   fi
 
   mirror="$(z2r_mirror_url "$rel")"
@@ -216,6 +241,15 @@ z2r_download_zapret2_release() {
   local yadisk=""
 
   rm -f "$dest"
+
+  if [ "$(zapret2_flavor_load)" = fork ]; then
+    # форк-релизы живут только на GitHub форка: зеркал и Яндекс.Диска нет
+    primary="${ZAPRET2_FORK_RELEASE_BASE}/v${ver}/${tarfile}"
+    z2r_fetch_url_to_file "$dest" "$primary" && return 0
+    rm -f "$dest"
+    return 1
+  fi
+
   if z2r_fetch_url_to_file "$dest" "$primary"; then
     return 0
   fi
@@ -414,6 +448,20 @@ source "$LIB_DIR/submenus.sh"
 #          fwtype_apply, menu_action_toggle_udp_range, menu_action_set_tls_blob
 source "$LIB_DIR/actions.sh"
 
+# Развёртывание из tar-релизов и подменю обновлений (п.5). Не обязательный
+# модуль: на старых установках его нет, меню п.5 деградирует до прежнего
+# поведения. Лаунчер z2r вызывает его и standalone.
+# Функции: deploy_from_tar, deploy_check_latest, deploy_update_menu
+if [ -f "$LIB_DIR/deploy.sh" ]; then
+  source "$LIB_DIR/deploy.sh"
+fi
+
+# Разовая миграция: legacy profile.lock (/opt/etc/z2r) сливается в lock-файлы
+# (существующий лок побеждает), файл и каталог удаляются. Идемпотентна.
+if type orch_profile_lock_migrate >/dev/null 2>&1; then
+  orch_profile_lock_migrate || true
+fi
+
 # Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
 # из TCP_Custom.txt (старые обновления затирали список), возвращаются в список.
 if type custom_rkn_restore_from_locks >/dev/null 2>&1; then
@@ -512,10 +560,6 @@ z2r_archive_preflight() {
   local required_archive
 
   [ "${Z2R_OFFLINE:-0}" = "1" ] || return 0
-  [ -n "${Z2R_PROJECT_DIR:-}" ] && [ -d "$Z2R_PROJECT_DIR" ] || {
-    echo -e "${red}Не найден payload проекта из установочного архива.${plain}"
-    return 1
-  }
   [ -n "${ZAPRET2_ARCHIVE_DIR:-}" ] && [ -d "$ZAPRET2_ARCHIVE_DIR" ] || {
     echo -e "${red}Не найден каталог vendor из установочного архива.${plain}"
     return 1
@@ -1224,6 +1268,9 @@ zator_remove() {
   fi
   strategy_validator_remove_service || true
   webui_remove || true
+  # До эпохи единого locked.tsv состояние профилей жило в /opt/etc/z2r —
+  # убираем, чтобы после полного удаления не оставалось «призраков».
+  rm -rf /opt/etc/z2r 2>/dev/null || true
   if ! rm -rf "$ZATOR_ROOT" 2>/dev/null; then
     echo -e "${red}Не удалось полностью удалить $ZATOR_ROOT${plain}"
     return 1
@@ -1231,10 +1278,82 @@ zator_remove() {
   echo -e "${green}Каталог zator удалён: $ZATOR_ROOT${plain}"
 }
 
+# ---------------------------------------------------------- выбор сборки zapret2
+# official: релизы bol-van (GitHub + зеркала + Яндекс.Диск).
+# fork: релизы форка MarkinAlexander/zapret2 — официальный код плюс патч
+# десинка TLS reasm для платформ с аппаратным fastpath (MT7621/FASTNAT,
+# KN-1011) с автодетектом; живут только на GitHub форка.
+zapret2_flavor_file() {
+  printf '%s/extra_strats/cache/zapret2_flavor' "${ZATOR_ROOT:-/opt/zator}"
+}
+
+zapret2_flavor_load() {
+  local v
+  v="$(head -n1 "$(zapret2_flavor_file)" 2>/dev/null | tr -d ' \r\n')"
+  case "$v" in
+    fork) echo fork ;;
+    *)    echo official ;;
+  esac
+}
+
+zapret2_flavor_save() { # zapret2_flavor_save fork|official
+  [ "$1" = fork ] || [ "$1" = official ] || return 1
+  local file
+  file="$(zapret2_flavor_file)"
+  mkdir -p "$(dirname "$file")" 2>/dev/null
+  printf '%s\n' "$1" > "$file" 2>/dev/null
+}
+
+# Валидация версии zapret2 для текущего flavor: официальный формат
+# 1.0.5.1, у форка допустим суффикс сборки (1.0.5.1-reasm-fix).
+z2r_version_valid() {
+  local v="$1"
+  [ ${#v} -le 40 ] || return 1
+  if [ "$(zapret2_flavor_load)" = fork ]; then
+    printf '%s' "$v" | grep -Eq '^[0-9]+(\.[0-9]+)*(-[A-Za-z0-9._-]+)?$'
+    return $?
+  fi
+  printf '%s' "$v" | grep -Eq '^[0-9]+(\.[0-9]+)*$'
+}
+
+zapret2_flavor_prompt() {
+  local cur def num file
+  [ "${Z2R_OFFLINE:-0}" = "1" ] && return 0
+  file="$(zapret2_flavor_file)"
+  # форк по умолчанию на всех платформах (официальный код + патч reasm,
+  # больше тестеров); явный сохранённый выбор official уважается.
+  # Важно: пустой преф load возвращает как official, поэтому наличие
+  # файла выбора проверяем отдельно.
+  def=2
+  if [ -s "$file" ] && [ "$(zapret2_flavor_load)" = official ]; then
+    def=1
+  fi
+  echo -e "${cyan}Сборка zapret2:${plain}"
+  echo -e "  1) официальная bol-van"
+  echo -e "  2) форк: официальный код + патч TLS reasm для hardware fastpath"
+  if [ "${hardware:-}" = "keenetic" ]; then
+    echo -e "${green}На Keenetic рекомендуется вариант 2: патч чинит десинк TLS reasm${plain}"
+    echo -e "${green}на платформах с аппаратным fastpath (MT7621/FASTNAT, KN-1011).${plain}"
+  fi
+  while true; do
+    read -re -p "Выбор сборки [${def}]: " num || num=""
+    [ -z "$num" ] && num="$def"
+    case "$num" in
+      1) zapret2_flavor_save official
+         echo -e "${green}Выбрано: официальная сборка bol-van${plain}"
+         return 0 ;;
+      2) zapret2_flavor_save fork
+         echo -e "${green}Выбрано: форк с патчем TLS reasm${plain}"
+         return 0 ;;
+      *) echo "Введите 1 или 2 (Enter = ${def})." ;;
+    esac
+  done
+}
+
 #Запрос желаемой версии zapret2
 version_select() {
    if [ -n "${ZAPRET2_VERSION:-}" ]; then
-    if ! printf '%s\n' "$ZAPRET2_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+    if ! z2r_version_valid "$ZAPRET2_VERSION"; then
       echo -e "${red}Некорректная версия zapret2 из архива: $ZAPRET2_VERSION${plain}"
       return 1
     fi
@@ -1246,7 +1365,11 @@ version_select() {
 	read -re -p $'\033[0;32mВведите желаемую версию zapret2 (Enter для новейшей версии): \033[0m' VER
     # Если пустой ввод — берем значение по умолчанию
 	if [ -z "$VER" ]; then
-		lastest_release="https://api.github.com/repos/bol-van/zapret2/releases/latest"
+		if [ "$(zapret2_flavor_load)" = fork ]; then
+			lastest_release="https://api.github.com/repos/MarkinAlexander/zapret2/releases/latest"
+		else
+			lastest_release="https://api.github.com/repos/bol-van/zapret2/releases/latest"
+		fi
 	    # проверяем результаты по порядку
 		echo -e "${yellow}Поиск последней версии...${plain}"
     	VER1=$(curl -sL $lastest_release | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
@@ -1277,15 +1400,14 @@ version_select() {
     	fi
     	break
 	fi
-    #Считаем длину
-    LEN=${#VER}
-    #Проверка длины и простая валидация формата (цифры и точки)
-    if [ "$LEN" -gt 5 ]; then
-        echo "Некорректный ввод. Максимальная длина — 5 символов. Попробуйте снова."
-        continue
-    elif ! echo "$VER" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+    #Валидация формата (для форка допустим суффикс сборки)
+    if ! z2r_version_valid "$VER"; then
+      if [ "$(zapret2_flavor_load)" = fork ]; then
+        echo "Некорректный формат версии. Пример: 1.0.5.1 или 1.0.5.1-reasm-fix"
+      else
         echo "Некорректный формат версии. Пример: 0.8.2"
-        continue
+      fi
+      continue
     fi
     echo "Будет использоваться версия: $VER"
     break
@@ -1442,6 +1564,15 @@ install_zapret_reboot() {
   echo -e "${green}zapret2 перезапущен и полностью установлен\n${yellow}Открываю меню управления. Если меню закрылось или что-то пошло не так — просто напишите 'z2r' в терминале. Саппорт: tg: zee4r${plain}"
  else
   echo -e "${yellow}zapret2 полностью установлен, но не обнаружен после запуска в исполняемых задачах через pidof\nСаппорт: tg: zee4r${plain}"
+ fi
+ # После переустановки предлагаем восстановление из бэкапа, созданного
+ # перед операцией (как в п.5 обновления): конфиг только что развёрнут
+ # заново, умный перенос/списки возвращают пользовательские настройки.
+ # В ветке неудачи это ещё и путь отката.
+ if type backup_update_offer_restore >/dev/null 2>&1; then
+   backup_update_offer_restore || true
+ fi
+ if ! pidof nfqws2 >/dev/null; then
   pause_enter
  fi
 }
@@ -1882,7 +2013,7 @@ webui_submenu() {
     echo -e "${cyan}--- Web UI ---${plain}"
     echo -e "${yellow}Состояние: ${plain}${status_line}"
     echo ""
-    submenu_item "1" "Установить/обновить Web UI"
+    submenu_item "1" "Установить/переустановить Web UI"
     submenu_item "2" "Показать статус и URL"
     if [ "$webui_running" = "1" ]; then
       submenu_item "3" "Перезапустить Web UI"
@@ -1895,7 +2026,16 @@ webui_submenu() {
     read -re -p "Ваш выбор: " webui_answer
     case "$webui_answer" in
       "1")
-        webui_install || echo -e "${red}Установка/запуск Web UI не удался.${plain}"
+        # Обновление существующей панели — из релизного архива webui (сверка
+        # sha, рестарт); установка с нуля — webui_install (зависимости и
+        # службу archive не ставит).
+        if [ -d "$WEBUI_WWW" ] && type deploy_from_tar >/dev/null 2>&1; then
+          deploy_from_tar "$(deploy_releases_base)/latest/zator-webui.tar.gz" webui latest \
+            || webui_install \
+            || echo -e "${red}Обновление Web UI не удалось.${plain}"
+        else
+          webui_install || echo -e "${red}Установка/запуск Web UI не удался.${plain}"
+        fi
         pause_enter
         ;;
       "2")
@@ -1955,6 +2095,27 @@ get_menu() {
     local _cfg_file
     _cfg_file="$(config_get_file 2>/dev/null)" || _cfg_file=""
     menu_config_snapshot "$_cfg_file"
+    if type platform_summary_text >/dev/null 2>&1; then
+      MENU_PLATFORM="$(platform_summary_text)"
+      MENU_UPTIME="$(platform_uptime_text)"
+      MENU_RAM="$(platform_ram_text)"
+    else
+      MENU_PLATFORM="неизвестно"
+      MENU_UPTIME="неизвестно"
+      MENU_RAM="неизвестно"
+    fi
+    MENU_ZATOR_DATE="неизвестно"
+    MENU_WEBUI_DATE="неизвестно"
+    MENU_DEPLOY_NOTICE=""
+    MENU_ZAPRET2_LINE=""
+    MENU_ZAPRET2_VER="$(zapret2_version_short)" || MENU_ZAPRET2_VER=""
+    if [ -n "$MENU_ZAPRET2_VER" ]; then
+      MENU_ZAPRET2_LINE="zapret2 (nfqws2): ${plain}${MENU_ZAPRET2_VER}${yellow}
+"
+    fi
+    if type deploy_menu_header >/dev/null 2>&1; then
+      deploy_menu_header
+    fi
     MENU_ERR_LINE=""
     MENU_ERR_STATE=""
     if [ -s /tmp/nfqws2_1.err ] && z2r_err_journal /tmp/nfqws2_1.err | grep -q .; then
@@ -1986,18 +2147,21 @@ ${plain}
 ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
+Платформа: ${plain}${MENU_PLATFORM}${yellow}
+Аптайм: ${plain}${MENU_UPTIME}${yellow}
+RAM: ${plain}${MENU_RAM}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
-${MENU_ERR_LINE}${TITLE_MENU_LINE}
+zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
+${MENU_ZAPRET2_LINE}${MENU_DEPLOY_NOTICE}${MENU_ERR_LINE}${TITLE_MENU_LINE}
 ${green}Выберите необходимое действие:${yellow}
-Enter (без цифр) - переустановка/обновление zapret2
-${Fyellow}0.${yellow} Выход
+${Fcyan}0.${yellow} Выход
 ${Fcyan}001.${yellow} CDN тест (test.sh)
 ${Fcyan}01.${yellow} Проверить доступность сервисов (Тест не точен)
 ${Fcyan}1.${yellow} Фиксация стратегии профиля/безразборного блока. Текущие: ${plain}[ ${strategies_status} ]${yellow} (fallback TLS: ${plain}[$(fallback_strategy_text)]${yellow}, HTTP: ${plain}[$(fallback_http_strategy_text)]${yellow})
 ${Fcyan}2.${yellow} Стоп/старт zapret2, ${Fcyan}22${yellow} - рестарт (сейчас: $(pidof nfqws2 >/dev/null && echo "${green}Запущен${yellow}" || echo "${red}Остановлен${yellow}"))
 ${Fcyan}3.${yellow} Запуск blockcheck2 и сохранение SUMMARY
 ${Fcyan}4.${yellow} Удаление zator и zapret2, ${Fcyan} 44.${yellow} Удаление zapret2
-${Fcyan}5.${yellow} Обновить стратегии, сбросить листы подбора стратегий и исключений (есть бэкап)
+${Fcyan}5.${yellow} Обновление zator и zapret2 (релизы, стратегии, листы)
 ${Fcyan}6.${yellow} Управление доменами
 ${Fcyan}7.${yellow} Открыть в редакторе config (Установит nano редактор ~250kb)
 ${Fcyan}8.${yellow} Антиспуф DNS (UDP:53): защита от подмены DNS-ответов провайдером. Сейчас: ${plain}[${MENU_DNS_DESINC}]${yellow}
@@ -2006,7 +2170,7 @@ ${Fcyan}10.${yellow} (Де)активировать обход UDP на 1026-655
 ${Fcyan}11.${yellow} Управление аппаратным ускорением zapret2. Может увеличить скорость на роутере. Сейчас: ${plain}[${MENU_FLOWOFFLOAD}]${yellow}
 ${Fcyan}12.${yellow} Режим фильтра hostlist/autohostlist. Сейчас: ${plain}[${MENU_HOSTLIST}]${yellow}
 ${Fcyan}13.${yellow} Безразборный режим (fallback). Сейчас: ${plain}[${MENU_FALLBACK}]${yellow}
-${Fcyan}14.${yellow} Web-панель управления (установка/обновление, ~3МБ места)
+${Fcyan}14.${yellow} Web-панель управления (установка/переустановка; обновление - п.5)
 ${Fcyan}15.${yellow} Провайдер
 ${Fcyan}16.${yellow} Сменить TLS blob (--blob=maxru). Сейчас: ${plain}[${MENU_TLS_BLOB}]${yellow}
 ${Fcyan}18.${yellow} Защита от RST-инъекций. (BETA) Сейчас: ${plain}[${MENU_RST_GUARD}]${yellow}
@@ -2022,19 +2186,6 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     fi
   read -re -p "" answer_menu
     case "$answer_menu" in
-  "")
-    echo -e "${yellow}Вы уверены, что хотите переустановить/обновить zapret2?${plain}"
-    echo -e "${yellow}5 - Да, Enter/0 - Нет (вернуться в меню)${plain}"
-    read -r ans
-    if [ "$ans" = "5" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-      # подтверждение: выходим из get_menu и уходим в “тело” (переустановка/обновление)
-      return 0
-    else
-      # отмена: остаёмся в меню, цикл while true продолжится
-      :
-    fi
-    ;;
-
   "0")
     echo "Выход выполнен"
     exit 0
@@ -2125,17 +2276,27 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "5")
-    backup_helper_ask_and_create
-    # Сетевые сбои не должны ронять меню (set -e): модули не критичны,
-    # прежние версии продолжают работать.
-    locked_lua_update_from_repo || echo -e "${yellow}locked.lua не обновлён (сеть недоступна).${plain}"
-    circular_runtime_update_from_repo || echo -e "${yellow}Lua-модули circular не обновлены (сеть недоступна).${plain}"
-    strategy_validator_install_service || true
-    mkdir -p "$ORCH_DIR"
-    chmod 777 "$ORCH_DIR" 2>/dev/null || true
-    menu_action_update_config_reset || true
-    backup_update_offer_restore
-    pause_enter
+    if type deploy_update_menu >/dev/null 2>&1; then
+      deploy_update_menu
+    else
+      echo -e "${yellow}Обновление из релизов недоступно: нет lib/deploy.sh (обновитесь через лаунчер z2r). Прежнее поведение:${plain}"
+      backup_helper_ask_and_create
+      # Сетевые сбои не должны ронять меню (set -e): модули не критичны,
+      # прежние версии продолжают работать.
+      locked_lua_update_from_repo || echo -e "${yellow}locked.lua не обновлён (сеть недоступна).${plain}"
+      circular_runtime_update_from_repo || echo -e "${yellow}Lua-модули circular не обновлены (сеть недоступна).${plain}"
+      strategy_validator_install_service || true
+      mkdir -p "$ORCH_DIR"
+      chmod 777 "$ORCH_DIR" 2>/dev/null || true
+      menu_action_update_config_reset || true
+      backup_update_offer_restore
+      pause_enter
+    fi
+    # «Обновить/переустановить zapret2» из подменю: тот же путь, что Enter.
+    if [ "$DEPLOY_WANT_REINSTALL" = "1" ]; then
+      DEPLOY_WANT_REINSTALL=0
+      return 0
+    fi
     ;;
 
   "6")
@@ -2295,6 +2456,11 @@ else
 else
     echo -e "${yellow}zeefeer обновлен (UTC +0): $commit_date ${plain}"
  fi
+ # raw-установки без version.env: заполняем датой коммита ветки,
+ # чтобы шапка меню и панель не показывали пустые версии.
+ if type deploy_version_bootstrap >/dev/null 2>&1; then
+   deploy_version_bootstrap "$commit_date" || true
+ fi
 fi
 
 #Выполнение общего для всех ОС кода с ответвлениями под ОС
@@ -2343,6 +2509,7 @@ while true; do
  else
   echo -e "${yellow}Конфиг обновлен (UTC +0): $(z2r_github_commit_date config.default) ${plain}"
  fi
+ zapret2_flavor_prompt
  version_select
  
  #Скачивание, распаковка архива zapret2 и его удаление

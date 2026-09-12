@@ -82,7 +82,7 @@ Normal flow:
 
 ## Layout
 
-- `z2r.sh`: top-level orchestration script. Sources runtime modules from `zapret2/z2r_lib` after deployment, while this repository stores their source versions in `lib/`.
+- `z2r.sh`: top-level orchestration script. Sources runtime modules from `zapret2/z2r_lib` after deployment, while this repository stores their source versions in `lib/`. Selects the zapret2 build flavor at install/reinstall: `official` (bol-van releases, mirror + Yandex Disk fallback) or `fork` (MarkinAlexander/zapret2 releases, GitHub-only, hardware fastpath reasm patch; fork is the default on ALL platforms, an explicit saved `official` choice is respected). The choice persists in `$ZATOR_ROOT/extra_strats/cache/zapret2_flavor`; `zapret2_flavor_*`, `z2r_version_valid`, and `z2r_download_zapret2_release` are flavor-aware (fork allows version suffixes like `1.0.5.1-reasm-fix`). Covered by `tests/flavor_smoke.sh`.
 - `config.default`: main shipped `zapret2` config. This is now a large profile-driven config with `--lua-init`, `--lua-desync`, profile blocks, fallback blocks, blob declarations, and strategy numbering that other scripts depend on.
 - `lib/ui.sh`: generic menu and terminal UI helpers.
 - `lib/provider.sh`: ASN-based ISP/provider detection (ipwho.is → ipinfo.io → ip-api), city, cache, and manual override. The ASN→brand table is layered: builtin minimal table in `PROVIDER_ASN_BUILTIN` merged with the updatable `data/providers/asn.txt` (remote-priority, see `provider_load_database`/`provider_update_database`, cache in `extra_strats/cache/provider_asn.txt`, TTL 7 days, GitHub is never a runtime dependency).
@@ -96,6 +96,8 @@ Normal flow:
 - `lib/actions.sh`: config reset, backup, firewall mode switch, UDP toggles, TLS blob switching, and other menu actions.
 - `lib/config.sh`: shared shell helpers for reading/editing `/opt/zapret2/config`, mode labels, profile strategy counts, TLS blob mode, and Keenetic WAN interface detection.
 - `lib/orchestra_state.sh`: shared shell helpers for reading/writing orchestra lock TSV files and checking `nfqws2`.
+- `lib/deploy.sh`: tar-развёртывание релизов (`deploy_from_tar`, проверки свободного места, режимы staging A/B/C, меню п.5 «Обновление zator и zapret2», выборочный сброс пользовательских файлов к эталону, целостность). После деплоя core/full с payload `config.default` применяется к живому конфигу (`deploy_apply_config_default` -> `config_apply_from_default` из `lib/actions.sh`: локи, client-scope, WAN кинетика, рестарт; в standalone-режиме лаунчера — только эталон + подсказка). Версии живут в `$ZATOR_ROOT/extra_strats/cache/deploy/version.env` (ZATOR_*/WEBUI_*/TRACKING) и `latest.env`; манифесты установленного — `manifest.<variant>.tsv`. П.7 подменю — три пути: применить установленный config.default без скачивания (`deploy_apply_installed_config`, источник `$ZAPRET2_ROOT/config.default` -> fallback `.deploy-payload/`, при равных датах «# Last modified» применение пропускается; после успеха эталон копится в payload), перекачать релиз и применить, полный сброс до эталона. П.6 умеет ставить zapret2 из локального архива `/tmp` (`deploy_local_zapret2_pick` -> `ZAPRET2_ARCHIVE_DIR`+`ZAPRET2_VERSION`, суффикс версии закрепляет флэвор fork). Зеркало релизов: `RELEASES_MIRROR` в `extra_strats/cache/deploy/sources.env` (п.10 меню 5, приоритет env `Z2R_RELEASES_BASE` > зеркало > GitHub; тот же файл читает лаунчер). Шапка меню: красное «Есть новый конфиг от <дата>. Для применения: п.5 -> п.7» при `config_update_pending` (lib/config.sh, сравнение дат заголовков); при TRACKING != latest — жёлтая информация вместо красного «доступно обновление». Харденинг: члены tar проверяются на `..`/абсолютные пути, dest манифеста — только `/opt/zator/*` и `/opt/z2r.sh`. Не обязательный модуль: без него п.5 деградирует до прежнего поведения. Лаунчер z2r вызывает его standalone (`bash deploy.sh from-tar <файл|url> [variant] [tag]`) — при правках держать CLI-контракт и `deploy_dest_for` (нормализация `/opt/...` из манифеста) в актуальном виде.
+- `.github/workflows/deploy-tar.yml`: ручная сборка релизных архивов (`zator-core/webui/full.tar.gz` + `.sha256` + манифесты + `latest.json`; rolling-тег `latest` и неизменяемые номерные). Сборщик — `webui-src/scripts/pack-zator-tar.mjs` (`npm run pack`); карта файлов/классы защиты (`auto`/`keep-if-exists`/`payload`) в манифесте — держать синхронно с `get_repo` и `webui_install_files`. Галочка `build_offline` (по умолчанию ВЫКЛ) собирает офлайн-бандл `zator-offline-<zapret2вер>.tar.gz` (tools/build-offline-archive.sh, zapret2 из форка, версии с суффиксом разрешены): zator-full.tar.gz + vendor-архивы zapret2 + инсталлятор `offline/z2r`, который разворачивает затор штатным `deploy.sh from-tar` (TRACKING=`offline-<вер>` + AUTOUPDATE=off), ставит zapret2 из vendor и запускает /opt/z2r.sh; для офлайн-установки get_repo не ходит в сеть (Z2R_OFFLINE считает установленное дерево источником, payload дополнен fake_files.tar.gz и инитами strategy-validator). Офлайн-ассет предыдущего latest переносится в новый latest.
 - `lists/`: shipped hostlists and ipsets.
 - `fake/`: fake payload binaries, including TLS, QUIC, Discord UDP, SYN, and WireGuard initial payload variants.
 - `fake_files.tar.gz`: archive deployed by `z2r.sh` for fake payload installation.
@@ -143,7 +145,7 @@ Important practical consequence:
 - `lib/actions.sh` uses targeted `sed`/`awk` replacements against `/opt/zapret2/config`. Small wording changes in config blocks can silently break toggles.
 - `lib/strategies.sh` derives max strategy counts from config content. If profile structure changes, strategy menus can go out of sync.
 - `lib/config.sh` is shared by the menu and WebUI. Changes to mode detection or profile counting can affect both surfaces.
-- `lib/orchestra_state.sh` reads and writes `locked.tsv`; `z2r.sh` also temporarily switches `ORCH_LOCK_FILE` to `locked.manual.tsv`.
+- `lib/orchestra_state.sh` reads and writes `locked.tsv`; `z2r.sh` also temporarily switches `ORCH_LOCK_FILE` to `locked.manual.tsv`. Profile state has a single source of truth — the lock files themselves (`profile_state_*` are thin wrappers over `orch_locked_*`; profiles 8/9 route to `locked.manual.tsv`); the legacy `/opt/etc/z2r/profile.lock` is merged into the lock files once by `orch_profile_lock_migrate` at `z2r.sh` startup (existing locks win) and removed; `zator_remove` (menu 4) also deletes `/opt/etc/z2r`.
 - `z2r.sh` performs destructive operations on target machines, including removing or rebuilding `/opt/zapret2`.
 - All zapret2 init-script invocations must go through `z2r_service_action` (`lib/config.sh`): it detaches the init script from the terminal's process group (setsid, INT/QUIT/HUP-ignored fallback) so Ctrl+C/SIGHUP in an interactive session cannot kill a restart midway or the daemon itself. `Entware/zapret` overrides upstream `run_daemon` (spawn chain: `setsid` when the binary exists (newer Keenetic feeds) — full own session; otherwise job control `set -m` around the background spawn, immediately disabled with `set +m` — busybox ash gives the background job its own process group even in non-interactive scripts, verified live on Keenetic; without job control compiled in this degrades to the old plain-`&` behavior. Rationale: nfqws2 installs its own sigaction handlers for INT/TERM/HUP (`nfqws.c catch_signals`), so inherited SIG_IGN is overwritten — only group/session separation protects from Ctrl+C. Upstream pidfile format `${DAEMONBASE}_N.pid` is preserved; daemon stderr goes to `/tmp/${DAEMONBASE}_N.err`, truncated on each start (harmless `seccomp:` lines are filtered out); the main menu header shows a persistent red error-count line when the log contains real errors — never print daemon errors to the terminal by timeout from the init script, it pops over the menu and confuses users; stdout stays at /dev/null as upstream) and upstream `contains` (busybox `${1#*$2}` is quadratic on the 37KB config string — ~95s per restart on mipsel; the `case`-based override is linear) — keep both overrides after `. "$EXEDIR/functions"` and in sync with upstream when it changes.
 - `orch_auto_sweep` remembers whether nfqws2 was running before the sweep and restarts it (with a red warning) if Ctrl+C killed it mid-sweep; interruption during the inter-strategy pause must still print «Прервано пользователем…» (covered by `tests/tls_check_smoke.sh` scenarios 14c–14e).
@@ -154,7 +156,7 @@ Important practical consequence:
 - `lua/strategy-lock-manager.lua` is a shared source of truth for hostname normalization and lock/block state. Duplicating normalization elsewhere is likely to cause subtle bugs.
 - `webui/cgi-bin/_lib.sh` has its own CGI parsing and JSON output, but intentionally reuses runtime libs (it sources `lib/config.sh`, `lib/orchestra_state.sh`, `lib/strategies.sh`, and `lib/netcheck.sh` for the shared TLS-check engine, plus `lib/actions.sh` and `lib/provider.sh` for shared setters). Keep it Bash-compatible and BusyBox/uhttpd-friendly for embedded systems.
 - `webui/cgi-bin/_lib.sh` reuses shared setters from `lib/actions.sh` (`backup_smart_set_*`, `ports_apply_add`/`ports_apply_remove`, `backup_create_core`) and `lib/provider.sh` (`provider_set_manual`) instead of duplicating sed logic. The local `_fallback_set_state` is only a legacy fallback used when `lib/actions.sh` is unavailable; `api_fallback_state_set` normally calls `backup_smart_set_fallback` with the same auto-rotation guard as CLI `toggle_fallback_mode`. Changes to those lib functions affect both CLI and WebUI.
-- WebUI settings (auto-rotation, hostlist, RST guard, reasm, QUIC443, NFQWS2 ports, provider, backups) are exposed via `settings.cgi`/`backups.cgi` and mirrored in `webui/dev/fake_router_server.py` and `webui/dev/API_CONTRACT.md` — keep all three in sync when changing behavior. Update/install actions stay CLI-only by design.
+- WebUI settings (auto-rotation, hostlist, RST guard, reasm, QUIC443, NFQWS2 ports, provider, backups) are exposed via `settings.cgi`/`backups.cgi` and mirrored in `webui/dev/fake_router_server.py` and `webui/dev/API_CONTRACT.md` — keep all three in sync when changing behavior. Update/install actions stay CLI-only by design; the only network action of the panel is the presence check `settings.cgi?setting=update_check` (`api_update_check`: single short curl to latest.json, refreshes the `latest.env` cache via `deploy_latest_write_cache`; button `update-check-btn` in the version stat-card, visible only while no update is shown).
 
 ## Editing Guidelines
 
@@ -247,9 +249,10 @@ bash tests/profile_lock_smoke.sh
 - не пишет в `/opt`;
 - не запускает настоящий `zapret2`;
 - проверяет `bash -n` для основных shell-файлов;
-- проверяет persistent state: `auto` как отсутствие записи, `0`, `N`, `clear`;
+- проверяет состояние профилей по единому источнику `locked.tsv` (+ `locked.manual.tsv` для 8/9): `auto` как отсутствие записи, `0`, `N`; `profile_state_*` — обёртки над orch-локами, отдельного `profile.lock` больше нет;
+- проверяет миграцию legacy `/opt/etc/z2r/profile.lock` (`orch_profile_lock_migrate`): существующий лок побеждает, дырки дозаполняются, профили 8/9 уходят в `locked.manual.tsv`, файл и каталог удаляются, идемпотентность;
 - проверяет, что `locked.lua` содержит ветку `0 -> VERDICT_PASS`;
-- проверяет повторное применение состояния к свежему `config`;
+- проверяет повторное применение состояния к свежему `config` (`profile_apply_all` читает lock-файлы);
 - проверяет `RKN`, `Discord TCP`, `VOICE UDP`, fallback TLS;
 - проверяет, что `VOICE_UDP=0` убирает voice-порты из `NFQWS2_PORTS_UDP`;
 - проверяет идемпотентность `profile_apply_all`;
@@ -259,6 +262,35 @@ bash tests/profile_lock_smoke.sh
 
 ```text
 profile_lock smoke ok
+```
+
+```bash
+bash tests/deploy_tar_smoke.sh
+```
+
+Тест tar-развёртывания (`lib/deploy.sh` + сборщик `pack-zator-tar.mjs`), тоже
+только во временной директории в `/tmp` (`ZATOR_ROOT`/`Z2R_SCRIPT_DEST`
+переопределяются, `deploy_dest_for` перегоняет канонические `/opt/...` из
+манифеста в тестовые пути; SMOKE_DIST позволяет подать готовые архивы без
+node — так тест гоняется на самом роутере):
+
+- сборщик: три варианта одним прогоном, latest.json со схемой и размерами,
+  sha256sum -c, version.env/manifest.tsv внутри архива, LF, symlink;
+- deploy_from_tar: режим A (staging в /tmp) — файлы, `_root/z2r.sh`,
+  `_payload`, symlink cgi-bin;
+- защиты keep-if-exists (netrogat.txt, TCP_Custom.txt не перезаписываются),
+  runtime-файлы (autohostlist, cache) не тронуты;
+- слияние version.env по компонентам при webui-only деплое (ZATOR_* не
+  затираются), манифесты по вариантам;
+- выбор режима A/B/C по моку df; режим C — перестановка каталогов с
+  переносом runtime;
+- deploy_integrity_check (замечает изменения), deploy_reset_user_files
+  (all и выборочный сброс через stdin).
+
+Успешный результат:
+
+```text
+deploy tar smoke ok
 ```
 
 ```bash

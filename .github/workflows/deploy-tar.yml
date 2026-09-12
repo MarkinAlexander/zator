@@ -1,0 +1,149 @@
+name: deploy-tar
+
+# Ручная сборка релизных архивов развёртывания (zator-core/webui/full).
+# Автозапуска нет: только workflow_dispatch.
+#
+# Релизы:
+#   latest — rolling, тег latest, пересоздаётся (prerelease), его качает
+#            лаунчер при обычном режиме (stable URL releases/download/latest/...);
+#   <version> — неизменяемый номерной (stable-YYYYMMDD-HHMM или ручной номер),
+#            для пина/отката (stable URL releases/download/<tag>/...).
+#
+# Ассеты каждого релиза: zator-<variant>.tar.gz + .sha256 + .manifest.json +
+# .manifest.tsv + latest.json (указатель сборки с размерами для проверки
+# свободного места на устройстве).
+#
+# Офлайн-сборка zator-offline-<zapret2вер>.tar.gz (zator-full + архивы zapret2
+# из форка MarkinAlexander) — галочка build_offline, по умолчанию ВЫКЛЮЧЕНА:
+# ассет тяжёлый и нужен только к значимым релизам. У предыдущего latest
+# офлайн-ассет переносится в новый latest, чтобы ссылки не ломались.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Номер релиза (пусто = stable-<UTC таймстамп>)'
+        required: false
+        default: ''
+      update_latest:
+        description: 'Обновить rolling-релиз latest'
+        type: boolean
+        required: false
+        default: true
+      make_numbered:
+        description: 'Создать неизменяемый номерной релиз'
+        type: boolean
+        required: false
+        default: true
+      build_offline:
+        description: 'Собрать офлайн-сборку (zator + zapret2 из форка)'
+        type: boolean
+        required: false
+        default: false
+      zapret2_version:
+        description: 'Версия zapret2 для офлайн-сборки (пусто = свежий релиз форка)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  pack-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Pack variants
+        working-directory: webui-src
+        env:
+          VERSION_ARG: ${{ inputs.version }}
+        run: node scripts/pack-zator-tar.mjs --variant=all --repo "$GITHUB_REPOSITORY" ${VERSION_ARG:+--version="$VERSION_ARG"}
+
+      - name: Verify outputs
+        run: |
+          cd webui-src/dist
+          for v in core webui full; do
+            test -s "zator-$v.tar.gz"
+            sha256sum -c "zator-$v.sha256"
+            test -s "zator-$v.manifest.tsv"
+          done
+          test -s latest.json
+          node -e '
+            const m = require("./latest.json");
+            if (m.schemaVersion !== 1) process.exit(1);
+            for (const v of ["core", "webui", "full"]) {
+              const a = m.assets[v];
+              if (!a || !a.size || !a.sha256 || !a.unpackedSize || !a.url) process.exit(1);
+            }'
+
+      - name: Build offline bundle
+        if: ${{ inputs.build_offline }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZAPRET2_VERSION_INPUT: ${{ inputs.zapret2_version }}
+        run: |
+          V="${ZAPRET2_VERSION_INPUT#v}"
+          [ -n "$V" ] || V="$(gh api repos/MarkinAlexander/zapret2/releases/latest --jq .tag_name | sed 's/^v//')"
+          [ -n "$V" ] || { echo "не удалось определить версию zapret2" >&2; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          base="https://github.com/MarkinAlexander/zapret2/releases/download/v$V"
+          curl -fsSL -o "webui-src/dist/zapret2-v$V.tar.gz" "$base/zapret2-v$V.tar.gz"
+          curl -fsSL -o "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz" "$base/zapret2-v$V-openwrt-embedded.tar.gz"
+          bash tools/build-offline-archive.sh \
+            --zator-tar webui-src/dist/zator-full.tar.gz \
+            --zapret2 "webui-src/dist/zapret2-v$V.tar.gz" \
+            --zapret2-openwrt "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz" \
+            --version "$V" \
+            --output "webui-src/dist/zator-offline-$V.tar.gz"
+          rm -f "webui-src/dist/zapret2-v$V.tar.gz" "webui-src/dist/zapret2-v$V-openwrt-embedded.tar.gz"
+          (cd webui-src/dist && sha256sum "zator-offline-$V.tar.gz" > "zator-offline-$V.tar.gz.sha256")
+
+      - name: Carry over offline asset from previous latest
+        if: ${{ inputs.update_latest && !inputs.build_offline }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download latest -p 'zator-offline-*' -D webui-src/dist --clobber \
+            || echo "офлайн-ассета в предыдущем latest не было"
+
+      - name: Release version tag
+        id: rel
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=stable-$(date -u +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Recreate rolling release latest
+        if: ${{ inputs.update_latest }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest webui-src/dist/* \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "latest" \
+            --notes "Развёртываемые архивы zator. Сборка: $TAG, commit $GITHUB_SHA. Rolling-релиз, ассеты обновляются при каждой ручной сборке."
+
+      - name: Create numbered release
+        if: ${{ inputs.make_numbered }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Релиз $TAG уже существует — пропускаю (номерные релизы неизменяемы)." >&2
+            exit 1
+          fi
+          gh release create "$TAG" webui-src/dist/* \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes "Неизменяемый релиз развёртываемых архивов. commit $GITHUB_SHA. Установка конкретной версии: z2r --version=$TAG."

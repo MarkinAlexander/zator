@@ -37,6 +37,7 @@ find_runtime_libs || { echo 'Status: 500 Internal Server Error\r'; echo; echo '{
 [ -f "$LIB_DIR/actions.sh" ] && . "$LIB_DIR/actions.sh"
 [ -f "$LIB_DIR/provider.sh" ] && . "$LIB_DIR/provider.sh"
 [ -f "$LIB_DIR/telemetry.sh" ] && . "$LIB_DIR/telemetry.sh"
+[ -f "$LIB_DIR/deploy.sh" ] && . "$LIB_DIR/deploy.sh"
 
 telemetry_notify() {
   type send_stats >/dev/null 2>&1 && send_stats || true
@@ -143,9 +144,9 @@ _json_esc() {
 }
 
 # Пакетное чтение lock-состояний профилей: один проход по файлам
-# (locked.tsv, locked.manual.tsv, profile.lock) вместо ~4 внешних процессов
-# на каждый профиль. Семантика orch_scoped_lock_source / orch_locked_state_get /
-# profile_state_stored_get / profile_state_normalize сохранена; L — locked.tsv,
+# (locked.tsv, locked.manual.tsv) вместо ~4 внешних процессов на каждый
+# профиль. Семантика orch_scoped_lock_source / orch_locked_state_get /
+# profile_state_normalize сохранена; L — locked.tsv,
 # M — locked.manual.tsv (fallback-профили 8/9).
 _profile_states_scan() {
   local line pr rest po val cur var file tag
@@ -169,28 +170,12 @@ _profile_states_scan() {
       fi
     done < "$file"
   done
-  # profile.lock: profile proto state (или старый profile state = tls)
-  file="${PROFILE_STATE_FILE:-/etc/z2r/profile.lock}"
-  [ -f "$file" ] || return 0
-  local first second
-  while read -r pr first second _; do
-    case "$pr" in ""|"#"*|*[!0-9]*) continue ;; esac
-    if [ -n "$second" ]; then
-      printf -v "_STORE_${pr}_${first}" '%s' "$second"
-    elif [ -n "$first" ]; then
-      printf -v "_STORE_${pr}_tls" '%s' "$first"
-    fi
-  done < "$file"
 }
 
 _profile_cur_cached() {  # $1=profile $2=proto $3=L|M -> REPLY
   local var stored
-  var="_STORE_$1_$2"
+  var="_$3VAL_$1_$2"
   stored="${!var:-auto}"
-  if [ "$stored" = "auto" ]; then
-    var="_$3VAL_$1_$2"
-    stored="${!var:-auto}"
-  fi
   case "$stored" in
     ""|auto) REPLY="auto" ;;
     0|skip) REPLY="0" ;;
@@ -376,7 +361,7 @@ _service_apply_restart() {
 }
 
 strategy_locks_status_text() {
-  if [ -s "$ORCH_DIR/locked.tsv" ] || [ -s "$ORCH_DIR/locked.manual.tsv" ] || [ -s "$(profile_state_file)" ]; then
+  if [ -s "$ORCH_DIR/locked.tsv" ] || [ -s "$ORCH_DIR/locked.manual.tsv" ]; then
     echo "Есть"
   else
     echo "Нет"
@@ -667,8 +652,63 @@ api_state() {
   else
     dns_json="{\"state\":\"$MENU_DNS_DESINC\",\"enabled\":$([ "$MENU_DNS_DESINC" = "Включен" ] && echo true || echo false)}"
   fi
+  local version_json
+  # версия nfqws2 доступна всегда (lib/config.sh), независимо от lib/deploy.sh
+  local v_z2
+  v_z2="$(zapret2_version_short)"
+  _json_esc "$v_z2"; local j_z2="$REPLY"
+  local v_cfg_pending=false j_cfgdate j_cfgddate
+  _json_esc "$(config_last_modified "${ZAPRET2_ROOT:-/opt/zapret2}/config")"; j_cfgdate="$REPLY"
+  if type config_default_last_modified >/dev/null 2>&1; then
+    _json_esc "$(config_default_last_modified)"
+  else
+    _json_esc "$(config_last_modified "${ZAPRET2_ROOT:-/opt/zapret2}/config.default")"
+  fi
+  j_cfgddate="$REPLY"
+  if type config_update_pending >/dev/null 2>&1 && config_update_pending; then
+    v_cfg_pending=true
+  fi
+  local cfg_json="\"config_date\":\"$j_cfgdate\",\"config_default_date\":\"$j_cfgddate\",\"config_update_pending\":$v_cfg_pending"
+  if type deploy_version_field >/dev/null 2>&1; then
+    local v_zator_ver v_zator_date v_webui_ver v_webui_date v_tracking
+    local v_lz_date v_lw_date v_update=false
+    v_zator_ver="$(deploy_version_field ZATOR_VERSION)"
+    v_zator_date="$(deploy_version_field ZATOR_DATE)"
+    v_webui_ver="$(deploy_version_field WEBUI_VERSION)"
+    v_webui_date="$(deploy_version_field WEBUI_DATE)"
+    v_tracking="$(deploy_version_field TRACKING)"
+    # raw-установки до первого запуска z2r.sh живут без version.env:
+    # пустые поля в панели выглядят как поломка, показываем «неизвестно»
+    # (значения появится после deploy_version_bootstrap или tar-деплоя).
+    [ -n "$v_zator_ver" ] || v_zator_ver="неизвестно"
+    [ -n "$v_zator_date" ] || v_zator_date="неизвестно"
+    [ -n "$v_webui_ver" ] || v_webui_ver="неизвестно"
+    [ -n "$v_webui_date" ] || v_webui_date="неизвестно"
+    [ -n "$v_tracking" ] || v_tracking="latest"
+    v_lz_date="$(deploy_latest_field LATEST_ZATOR_DATE)"
+    v_lw_date="$(deploy_latest_field LATEST_WEBUI_DATE)"
+    local v_zs v_ws v_lz v_lw
+    v_zs="$(deploy_version_field ZATOR_SHA)"
+    v_ws="$(deploy_version_field WEBUI_SHA)"
+    v_lz="$(deploy_latest_field LATEST_ZATOR_SHA)"
+    v_lw="$(deploy_latest_field LATEST_WEBUI_SHA)"
+    if { [ -n "$v_lz" ] && [ -n "$v_zs" ] && [ "$v_zs" != "$v_lz" ]; } \
+      || { [ -n "$v_lw" ] && [ -n "$v_ws" ] && [ "$v_ws" != "$v_lw" ]; }; then
+      v_update=true
+    fi
+    _json_esc "$v_zator_ver"; local j_zver="$REPLY"
+    _json_esc "$v_zator_date"; local j_zdate="$REPLY"
+    _json_esc "$v_webui_ver"; local j_wver="$REPLY"
+    _json_esc "$v_webui_date"; local j_wdate="$REPLY"
+    _json_esc "$v_tracking"; local j_track="$REPLY"
+    _json_esc "$v_lz_date"; local j_lzdate="$REPLY"
+    _json_esc "$v_lw_date"; local j_lwdate="$REPLY"
+    version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"$j_zver\",\"zator_date\":\"$j_zdate\",\"webui_version\":\"$j_wver\",\"webui_date\":\"$j_wdate\",\"tracking\":\"$j_track\",\"update_available\":$v_update,\"latest_zator_date\":\"$j_lzdate\",\"latest_webui_date\":\"$j_lwdate\",$cfg_json}"
+  else
+    version_json="{\"zapret2_version\":\"$j_z2\",\"zator_version\":\"unknown\",\"zator_date\":\"\",\"webui_version\":\"unknown\",\"webui_date\":\"\",\"tracking\":\"latest\",\"update_available\":false,\"latest_zator_date\":\"\",\"latest_webui_date\":\"\",$cfg_json}"
+  fi
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls]},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
+{"status":$(status_json),"version":$version_json,"scopes":$(client_scopes_json),"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls]},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$([ "$MENU_WG_STATE_RAW" = "1" ] && echo true || echo false)},"fallback":{"state":"$MENU_FALLBACK","enabled":$([ "$MENU_FALLBACK" = "включен" ] && echo true || echo false)},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$([ "$MENU_UDP_GAMES" = "Включен" ] && echo true || echo false),"ports":"$udp_full"},"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$([ "$MENU_AUTO_MODE" = "включен" ] && echo true || echo false)},"hostlist":{"state":"$MENU_HOSTLIST","auto":$([ "$MENU_HOSTLIST" = "авто" ] && echo true || echo false)},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$([ "$MENU_RST_GUARD" = "включен" ] && echo true || echo false),"lua_available":$([ -s "$ZATOR_ROOT/lua/rst-guard.lua" ] && echo true || echo false)},"reasm":{"state":"$MENU_REASM","enabled":$([ "$MENU_REASM" = "включено" ] && echo true || echo false)},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$(_csv_tokens_json "$tcp_user")],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$(_csv_tokens_json "$udp_user")],"base":"$udp_base"}},"provider":$(_state_capture api_provider_get),"backups":$(_state_capture api_backups_list)}
 EOF
 )"
 }
@@ -750,6 +790,57 @@ api_check() {
   results="${results},$(check_one_target_json "Blocked Sites" "https://meduza.io")"
   results="${results},$(check_one_target_json "Instagram" "https://www.instagram.com/")"
   send_json "200 OK" "{\"results\":[${results}]}"
+}
+
+# settings.cgi?setting=update_check: проверка наличия релиза из веб-панели.
+# Одиночный короткий fetch (CGI не должен подвешивать httpd; базовый
+# z2r_fetch_url_to_file ретраит до ~36с — тут неприемлемо), кэш latest.env
+# обновляется штатным deploy_latest_write_cache, дальше state.cgi видит
+# результат как обычно. Установка/обновление остаются в CLI (п.5/лаунчер).
+api_update_check() {
+  if ! type deploy_json_str >/dev/null 2>&1 || ! type deploy_releases_base >/dev/null 2>&1; then
+    send_json "200 OK" '{"update_available":false,"release":"","latest_zator_date":"","latest_webui_date":"","checked_at":"","error":"Модуль обновлений недоступен"}'
+    return 0
+  fi
+  local meta="/tmp/z2r_webui_meta_$$.json" err="" url
+  rm -f "$meta"
+  url="$(deploy_releases_base)/latest/latest.json"
+  if curl -fsSLk --connect-timeout 3 --max-time 8 -o "$meta" "$url" 2>/dev/null \
+     || wget -q -T 8 -O "$meta" "$url" 2>/dev/null; then
+    DEPLOY_META_RELEASE="$(deploy_json_str "$meta" release)"
+    DEPLOY_META_BUILD_DATE="$(deploy_json_str "$meta" buildDate)"
+    DEPLOY_META_ZATOR_DATE="$(deploy_json_str "$meta" zatorDate)"
+    DEPLOY_META_WEBUI_DATE="$(deploy_json_str "$meta" webuiDate)"
+    DEPLOY_META_ZATOR_SHA="$(deploy_json_str "$meta" zatorSha)"
+    DEPLOY_META_WEBUI_SHA="$(deploy_json_str "$meta" webuiSha)"
+    rm -f "$meta"
+    [ -n "$DEPLOY_META_RELEASE" ] && type deploy_latest_write_cache >/dev/null 2>&1 && deploy_latest_write_cache
+  else
+    rm -f "$meta"
+    err="Не удалось связаться с сервером обновлений"
+  fi
+
+  local update=false zs ws lzs lws
+  zs="$(deploy_version_field ZATOR_SHA)"
+  lzs="$(deploy_latest_field LATEST_ZATOR_SHA)"
+  ws="$(deploy_version_field WEBUI_SHA)"
+  lws="$(deploy_latest_field LATEST_WEBUI_SHA)"
+  if { [ -n "$zs" ] && [ -n "$lzs" ] && [ "$zs" != "$lzs" ]; } \
+     || { [ -e "$ZATOR_ROOT/webui/run-webui.sh" ] && [ -n "$ws" ] && [ -n "$lws" ] && [ "$ws" != "$lws" ]; }; then
+    update=true
+  fi
+
+  local rel lz lw ck j_rel j_lz j_lw j_ck j_err
+  rel="$(deploy_latest_field LATEST_RELEASE)"
+  lz="$(deploy_latest_field LATEST_ZATOR_DATE)"
+  lw="$(deploy_latest_field LATEST_WEBUI_DATE)"
+  ck="$(deploy_latest_field LATEST_CHECKED_AT)"
+  _json_esc "$rel"; j_rel="$REPLY"
+  _json_esc "$lz"; j_lz="$REPLY"
+  _json_esc "$lw"; j_lw="$REPLY"
+  _json_esc "$ck"; j_ck="$REPLY"
+  _json_esc "$err"; j_err="$REPLY"
+  send_json "200 OK" "{\"update_available\":$update,\"release\":\"$j_rel\",\"latest_zator_date\":\"$j_lz\",\"latest_webui_date\":\"$j_lw\",\"checked_at\":\"$j_ck\",\"error\":\"$j_err\"}"
 }
 
 api_tls_blob_get() {
@@ -1302,7 +1393,7 @@ api_provider_set() {
   name="${name//|/}"
   city="${city//$'\n'/}"
   city="${city//|/}"
-  [ -n "$(printf '%s' "$name" | tr -d '[:space:]')" ] || send_error "400 Bad Request" "Укажите название провайдера"
+  [ -n "$(printf '%s' "$name" | tr -d ' \t\r\n')" ] || send_error "400 Bad Request" "Укажите название провайдера"
   if ! type provider_set_manual >/dev/null 2>&1; then
     send_error "500 Internal Server Error" "Модуль провайдера недоступен"
   fi

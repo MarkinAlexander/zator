@@ -540,6 +540,18 @@ button.primary.is-busy::after,
   font-size: 1.05rem;
 }
 
+.stat-card.is-compact .value {
+  font-size: 1.05rem;
+}
+
+.stat-card.is-compact .value.is-long {
+  font-size: 0.95rem;
+}
+
+.stat-card.is-compact .value-sub {
+  font-size: 0.8rem;
+}
+
 .stat-card .value-sub {
   display: block;
   font-size: 0.9rem;
@@ -547,6 +559,7 @@ button.primary.is-busy::after,
   color: var(--muted);
   line-height: 1.2;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .profile-card {
@@ -695,6 +708,7 @@ input[type="number"]::-webkit-inner-spin-button {
 .ok { color: var(--success); }
 .warn { color: var(--warning); }
 .bad { color: var(--danger); }
+.info { color: var(--accent); }
 
 .settings-form {
   display: flex;
