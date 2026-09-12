@@ -27,9 +27,9 @@
 // лёгкий указатель сборки с размерами для проверки свободного места.
 
 import { gzipSync } from 'node:zlib'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 
@@ -102,30 +102,62 @@ if (variantArg !== 'all' && !ALL_VARIANTS.includes(variantArg)) {
 }
 const buildVariants = variantArg === 'all' ? ALL_VARIANTS : [variantArg]
 
-// Z2R_LIB_FILES из z2r.sh: repo lib/ -> $ZATOR_ROOT/z2r_lib
-const Z2R_LIB_FILES = [
-  'ui.sh', 'provider.sh', 'telemetry.sh', 'recommendations.sh', 'netcheck.sh',
-  'premium.sh', 'strategies.sh', 'submenus.sh', 'actions.sh', 'config.sh',
-  'orchestra_state.sh', 'deploy.sh',
-]
+// Философия упаковки (по требованию автора): авто-обход всего + список
+// исключений. Забыли убрать из исключений — уедет лишний безвредный файл;
+// жёсткая карта при забытой правке молча теряла файлы релиза.
+const AUTO_EXCLUDE = new Set([
+  'lists/autohostlist.txt', // runtime-файл устройства, в релиз не пакуется
+  'extra_strats/TCP/GV', // апстрим #7: numbered GV-стратегии не подключены ни конфигом, ни z2r.sh
+])
 
-// repo lists/ -> $ZATOR_ROOT/lists (список из get_repo + netrogat_substrings);
-// autohostlist.txt не упаковываем — runtime-файл устройства
-const LISTS = [
-  'cloudflare-ipset.txt', 'cloudflare-ipset_v6.txt', 'netrogat.txt',
-  'netrogat_substrings.txt', 'russia-discord.txt', 'russia-youtube-rtmps.txt',
-  'russia-youtube.txt', 'russia-youtubeQ.txt', 'tg_cidr.txt',
-]
+function walkRepo(rel, { recursive = true } = {}) {
+  const out = []
+  if (!existsSync(join(repoRoot, rel))) return out
+  for (const name of readdirSync(join(repoRoot, rel)).sort()) {
+    const relPath = `${rel}/${name}`
+    if (AUTO_EXCLUDE.has(relPath)) continue
+    if (recursive && statSync(join(repoRoot, relPath)).isDirectory()) {
+      if (relPath === 'extra_strats/cache') continue // runtime
+      out.push(...walkRepo(relPath, { recursive }))
+      continue
+    }
+    out.push(relPath)
+  }
+  return out
+}
 
-// repo extra_strats/ (вложенные) -> плоские имена из get_repo
-const EXTRA_STRATS = [
-  ['extra_strats/UDP/YT/List.txt', 'extra_strats/UDP_YT_list.txt'],
-  ['extra_strats/TCP/RKN/List.txt', 'extra_strats/TCP_RKN_list.txt'],
+// repo lib/ -> $ZATOR_ROOT/z2r_lib: весь каталог.
+const LIB_FILES = walkRepo('lib', { recursive: false })
+if (LIB_FILES.length === 0) {
+  console.error('lib/: каталог пуст?')
+  process.exit(1)
+}
+
+// repo lists/ -> $ZATOR_ROOT/lists: весь каталог.
+const LISTS = walkRepo('lists', { recursive: false })
+if (LISTS.length === 0) {
+  console.error('lists/: каталог пуст?')
+  process.exit(1)
+}
+
+// repo extra_strats/ (вложенные) -> плоские имена get_repo по механическому
+// правилу «каталоги через _ + имя файла со строчной первой буквы»;
+// исключения — в OVERRIDES (забыли — уедет лишний файл с чуть другим именем).
+// Имена-исключения зашиты в config.default и KEEP_IF_EXISTS — держать
+// точь-в-точь; незнакомые файлы едут по механическому правилу.
+const EXTRA_STRAT_OVERRIDES = new Map([
   ['extra_strats/TCP/RKN/Custom.txt', 'extra_strats/TCP_Custom.txt'],
-  ['extra_strats/TCP/YT/List.txt', 'extra_strats/TCP_YT_list.txt'],
   ['extra_strats/TCP/RKN/Discord.txt', 'extra_strats/TCP_Discord.txt'],
   ['extra_strats/TCP/RKN/Domains_By_Substring.txt', 'extra_strats/TCP_RKN_domains_by_substring.txt'],
-]
+])
+function extraStratFlat(repoPath) {
+  if (EXTRA_STRAT_OVERRIDES.has(repoPath)) return EXTRA_STRAT_OVERRIDES.get(repoPath)
+  const parts = repoPath.split('/')
+  parts.shift() // ведущий extra_strats в плоское имя не входит
+  const file = parts.pop()
+  return `extra_strats/${[...parts, file[0].toLowerCase() + file.slice(1)].join('_')}`
+}
+const EXTRA_STRATS = walkRepo('extra_strats').map((p) => [p, extraStratFlat(p)])
 
 const KEEP_IF_EXISTS = new Set([
   'lists/netrogat.txt',
@@ -154,17 +186,19 @@ function add(archivePath, repoPath, { executable = false, cls = 'auto', comp = '
 const webuiCgi = readdirSync(join(repoRoot, 'webui', 'cgi-bin')).sort()
 const blockcheckZ4r = readdirSync(join(repoRoot, 'blockcheck2.d', 'z4r')).sort()
 
-for (const name of Z2R_LIB_FILES) add(`z2r_lib/${name}`, `lib/${name}`)
+for (const repoPath of LIB_FILES) add(`z2r_lib/${basename(repoPath)}`, repoPath)
 for (const name of readdirSync(join(repoRoot, 'lua')).sort()) {
   add(`lua/${name}`, `lua/${name}`, { executable: name === 'strategy-validator.sh' })
 }
-for (const name of LISTS) add(`lists/${name}`, `lists/${name}`)
+for (const repoPath of LISTS) add(`lists/${basename(repoPath)}`, repoPath)
 for (const [from, to] of EXTRA_STRATS) add(to, from)
 add('extra_strats/cache/orchestra/locked.lua', 'orchestra/locked.lua')
-for (const name of ['client-scope-iptables.sh', 'client-scope-nft.sh']) {
-  add(`firewall/${name}`, `firewall/${name}`, { executable: true })
+for (const repoPath of walkRepo('firewall', { recursive: false })) {
+  add(repoPath, repoPath, { executable: true })
 }
-add('data/providers/asn.txt', 'data/providers/asn.txt')
+for (const repoPath of walkRepo('data', { recursive: true })) {
+  add(repoPath, repoPath)
+}
 for (const name of readdirSync(join(repoRoot, 'fake')).sort()) {
   add(`files/fake/${name}`, `fake/${name}`)
 }
@@ -190,6 +224,43 @@ for (const [wwwName, repoName] of [
   ['app.js', 'app.js'], ['favicon.svg', 'favicon.svg'],
 ]) {
   add(`webui/www/${wwwName}`, `webui/${repoName}`, { comp: 'webui' })
+}
+
+// raw-путь установки (webui_install_files в z2r.sh) качает cgi пофайлово:
+// каталог и его список обязаны совпадать, иначе новый *.cgi есть в релизе,
+// но не доезжает до raw-установок. z2r.sh — единственный источник списка.
+function parseZ2rWebuiFetchList() {
+  const src = readFileSync(join(repoRoot, 'z2r.sh'), 'utf8')
+  const body = src.match(/webui_install_files\(\) \{([\s\S]*?)\n\}/)
+  if (!body) {
+    console.error('z2r.sh: не найдена webui_install_files')
+    process.exit(1)
+  }
+  return [...body[1].matchAll(/webui_repo_fetch "([^"]+)"/g)].map((m) => m[1])
+}
+{
+  const rawList = parseZ2rWebuiFetchList()
+  const cgiSet = new Set(webuiCgi.map((name) => `cgi-bin/${name}`))
+  const rootSet = new Set(['index.html', 'styles.css', 'app.js', 'favicon.svg', 'run-webui.sh'])
+  const rawCgi = []
+  for (const rel of rawList) {
+    if (rel.startsWith('cgi-bin/')) {
+      rawCgi.push(rel)
+      if (!cgiSet.has(rel)) {
+        console.error(`z2r.sh webui_install_files качает webui/${rel}, которого нет в webui/cgi-bin`)
+        process.exit(1)
+      }
+    } else if (!rootSet.has(rel)) {
+      console.error(`z2r.sh webui_install_files качает неизвестный webui/${rel}`)
+      process.exit(1)
+    }
+  }
+  for (const rel of cgiSet) {
+    if (!rawCgi.includes(rel)) {
+      console.error(`webui/${rel} есть в репозитории, но отсутствует в webui_install_files (z2r.sh) — raw-установки его не получат`)
+      process.exit(1)
+    }
+  }
 }
 
 function isBinary(buf) {
