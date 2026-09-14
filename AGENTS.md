@@ -92,6 +92,7 @@ Normal flow:
 - `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel single-attempt TLS 1.2/TLS 1.3 HEAD probes with `-L -k` + a Range download of up to 64KB when HEAD returns 2xx/3xx; classification by curl rc and HTTP code; any HTTP code including 4xx/5xx means the server answered → green ok, e.g. googlevideo root 404 is normal). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
 - `lib/premium.sh`: easter-egg and premium menu branches.
 - `lib/strategies.sh`: active strategy status, orchestra lock helpers, per-profile strategy trial flow, custom RKN domain handling.
+- `lib/dpidetect.sh`: дифференциальная диагностика «кто сломал домен» (ручной отладочный вход, п.12 подменю стратегий и п.9 управления доменами): две серии TLS-проб на временных runtime-локах (лок 0 = VERDICT_PASS = «без обхода» vs лок стратегии) движком `z2r_tls_*`, вердикты blocked_fixed / blocked_improved / blocked_nofix / not_blocked / broken_by_strategy / dead_domain, опциональное tcpdump-подтверждение RST (DPIDETECT_TCPDUMP=1). Также меню авто-исключённых доменов (`dpidetect_broken_list`).
 - `lib/submenus.sh`: menu wiring for strategies, provider, offload, and related actions.
 - `lib/actions.sh`: config reset, backup, firewall mode switch, UDP toggles, TLS blob switching, and other menu actions.
 - `lib/config.sh`: shared shell helpers for reading/editing `/opt/zapret2/config`, mode labels, profile strategy counts, TLS blob mode, and Keenetic WAN interface detection.
@@ -110,6 +111,8 @@ Normal flow:
 - `lua/domain-grouping.lua`: grouping logic for related domains.
 - `lua/silent-drop-detector.lua`: silent-drop detection.
 - `lua/rst-guard.lua`: runtime RST injection guard loaded from `config.default`.
+- `lua/break-detector.lua`: автоматический детектор «домен ломается самим обходом» — пер-хостовый счётчик отказов (входящий RST на раннем rseq, ретрансмиты) прямо в потоке пакетов обоих оркестраторов (хук в `circular_locked` после лок-ветвления + `circular_quality` переиспользует is_failure/is_success); при 3 отказах за 120с пишет request-файл в `/tmp/z2r-break-check` (атомарный rename, очередь от nobody) и забирает result по своим пакетам. Пороги — аргументы оркестратора `break_fails=`/`break_window=`/`break_cooldown=`.
+- `lua/break-validator.sh` + иниты (`Entware/z2r-break-validator` S94, `init.d/openwrt/z2r-break-validator`, systemd-юнит в z2r.sh): демон дифференциальной пробы — хост временно в горячем exclude_hostlist (`lists/z2r_broken_hosts.txt`, TTL 2с) = «без обхода», затем под текущей стратегией; BROKEN → домен постоянно исключается из всех TCP-профилей + строка в `extra_strats/cache/orchestra/broken_hosts.tsv`. Ручные TCP-профили 1/2/3/3S/4/9 имеют `payload=...,empty` чтобы входящий RST доходил до lua (fallback-блок 8 — НЕТ: sed'ы переключателя RST-guard в `lib/actions.sh` матчат точную строку payload внутри `#Z2R_FALLBACK`); `circular_locked` гейтит пустые пакеты без RST до `orchestrate()`.
 - `webui/`: static assets, CGI endpoints, and runner for the local WebUI on port `17682`. `index.html`/`app.js`/`styles.css` are build artifacts — the frontend sources live in `webui-src/` (Vue 3 + TypeScript, hash-router); rebuild with `cd webui-src && npm install && npm run build` (Vite emits exactly `app.js` + `styles.css` + `index.html` into `webui/` and stamps `?v=<sha256>` cache-busting). Dev: `npm run dev` proxies `/cgi-bin` to `webui/dev/fake_router_server.py`.
 
 ### WebUI frontend build workflow (webui-src/)
@@ -457,6 +460,51 @@ bash tests/tls_check_smoke.sh
 
 ```text
 tls check smoke ok
+```
+
+```bash
+bash tests/dpidetect_smoke.sh
+```
+
+Тест ручной дифференциальной диагностики «кто сломал домен» (`lib/dpidetect.sh`),
+только во временной директории в `/tmp`, с детерминированным фазовым моком curl
+(планы по версиям TLS: `MOCK_P1/MOCK_P2="tok12,tok13"`, докачки по фазам):
+
+- классификатор (ok/warn/fail × фазы), все интеграционные вердикты
+  (blocked_fixed / broken_by_strategy / not_blocked / blocked_nofix /
+  dead_domain; warn-пути движка недетерминированы в моке — покрыты юнит-тестами
+  классификатора; 403 = «транспорт пробит» = ok);
+- восстановление прежних локов при любом исходе (auto → clear, N → set),
+  кандидат из аргумента сильнее прежнего лока;
+- отказ при незапущенном zapret2 (без записей в локи), сбой пробы (rc=1,
+  лок восстановлен), tcpdump-подсчёт RST (всего/от сервера).
+
+Успешный результат:
+
+```text
+dpidetect smoke ok
+```
+
+```bash
+bash tests/break_detect_smoke.sh
+```
+
+Тест автоматического детектора «домен ломается обходом» (break-detector.lua +
+break-validator.sh), тоже только в `/tmp`:
+
+- статическая разводка: `--lua-init` break-detector, exclude_hostlist на 10
+  TCP-профилях (UDP не тронуты), guarded-хуки в обоих оркестраторах, хук в
+  circular_locked после ветки locked==0, деплой в z2r.sh и pack-zator-tar.mjs,
+  иниты (очередь от nobody);
+- логика демона с моком curl и изолированными каталогами
+  (Z2R_BREAK_QUEUE/EXCLUDE/LOG/SETTLE): все 6 вердиктов, BROKEN оставляет
+  хост в исключении + пишет лог, EXCLUDED не делает проб, битый TSV молча
+  удаляется, формат result-файла.
+
+Успешный результат:
+
+```text
+break detect smoke ok
 ```
 
 ## Local Inspection Notes
