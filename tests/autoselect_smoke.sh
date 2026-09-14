@@ -99,6 +99,14 @@ grep -q 'autoselect_run "domain"' "$REPO_DIR/lib/strategies.sh" \
 grep -q 'Z2R_TLS_NO_DL' "$REPO_DIR/lib/netcheck.sh" \
   || fail "netcheck.sh: нет режима без докачки"
 
+# Инвариант: каждая библиотека из Z2R_LIB_FILES реально подключается
+# source-строкой в z2r.sh (чек-лист без source = «command not found» в меню).
+while IFS= read -r lib; do
+  [ -n "$lib" ] || continue
+  grep -Fq "source \"\$LIB_DIR/$lib\"" "$REPO_DIR/z2r.sh" \
+    || fail "z2r.sh: $lib в Z2R_LIB_FILES, но нет source-строки"
+done < <(sed -n 's/^Z2R_LIB_FILES="\(.*\)"$/\1/p' "$REPO_DIR/z2r.sh" | tr ' ' '\n')
+
 # shellcheck source=/dev/null
 source "$REPO_DIR/lib/netcheck.sh"
 # shellcheck source=/dev/null

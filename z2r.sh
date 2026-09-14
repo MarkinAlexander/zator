@@ -454,6 +454,14 @@ source "$LIB_DIR/premium.sh"
 # Функции: get_current_strategies_info, orch_profile_try, Strats_Tryer
 source "$LIB_DIR/strategies.sh"
 
+# Дифференциальная диагностика «кто сломал домен» (ручной вход п.12/п.9)
+# и список авто-исключённых. Функции: dpidetect_run, dpidetect_menu
+source "$LIB_DIR/dpidetect.sh"
+
+# Быстрый подбор стратегий (пункт F): baseline-гейт, HEAD-отсев без докачки,
+# early-exit, warm-кэш побед. Функции: autoselect_run, autoselect_warm_list
+source "$LIB_DIR/autoselect.sh"
+
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
 source "$LIB_DIR/submenus.sh"
