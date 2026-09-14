@@ -1,0 +1,38 @@
+#!/bin/sh
+
+PATH=/opt/bin:/opt/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+WORKER=/opt/zator/lua/break-validator.sh
+PIDFILE=/opt/var/run/z2r-break-validator.pid
+LOGFILE=/tmp/z2r-break-validator.log
+
+running() {
+    [ -r "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+case "$1" in
+    start)
+        running && exit 0
+        mkdir -p /opt/var/run /tmp/z2r-break-check || exit 1
+        chown nobody:nogroup /tmp/z2r-break-check 2>/dev/null || chown nobody:nobody /tmp/z2r-break-check 2>/dev/null
+        chmod 700 /tmp/z2r-break-check || exit 1
+        nohup "$WORKER" --daemon >>"$LOGFILE" 2>&1 &
+        echo $! > "$PIDFILE"
+        ;;
+    stop)
+        if running; then kill "$(cat "$PIDFILE")"; fi
+        rm -f "$PIDFILE"
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    status)
+        running
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+        ;;
+esac

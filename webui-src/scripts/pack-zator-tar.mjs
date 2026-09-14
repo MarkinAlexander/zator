@@ -162,6 +162,7 @@ const EXTRA_STRATS = walkRepo('extra_strats').map((p) => [p, extraStratFlat(p)])
 const KEEP_IF_EXISTS = new Set([
   'lists/netrogat.txt',
   'lists/netrogat_substrings.txt',
+  'lists/z2r_broken_hosts.txt',
   'extra_strats/TCP_Custom.txt',
   'extra_strats/TCP_RKN_domains_by_substring.txt',
   'files/fake/custom_tls.bin',
@@ -188,7 +189,7 @@ const blockcheckZ4r = readdirSync(join(repoRoot, 'blockcheck2.d', 'z4r')).sort()
 
 for (const repoPath of LIB_FILES) add(`z2r_lib/${basename(repoPath)}`, repoPath)
 for (const name of readdirSync(join(repoRoot, 'lua')).sort()) {
-  add(`lua/${name}`, `lua/${name}`, { executable: name === 'strategy-validator.sh' })
+  add(`lua/${name}`, `lua/${name}`, { executable: name === 'strategy-validator.sh' || name === 'break-validator.sh' })
 }
 for (const repoPath of LISTS) add(`lists/${basename(repoPath)}`, repoPath)
 for (const [from, to] of EXTRA_STRATS) add(to, from)
@@ -209,6 +210,8 @@ add('_payload/fake_files.tar.gz', 'fake_files.tar.gz', { cls: 'payload' })
 add('_payload/Entware/keenetic-policy.sh', 'Entware/keenetic-policy.sh', { cls: 'payload', executable: true })
 add('_payload/Entware/z2r-strategy-validator', 'Entware/z2r-strategy-validator', { cls: 'payload', executable: true })
 add('_payload/init.d/openwrt/z2r-strategy-validator', 'init.d/openwrt/z2r-strategy-validator', { cls: 'payload', executable: true })
+add('_payload/Entware/z2r-break-validator', 'Entware/z2r-break-validator', { cls: 'payload', executable: true })
+add('_payload/init.d/openwrt/z2r-break-validator', 'init.d/openwrt/z2r-break-validator', { cls: 'payload', executable: true })
 for (const name of blockcheckZ4r) {
   add(`_payload/blockcheck2.d/z4r/${name}`, `blockcheck2.d/z4r/${name}`, {
     cls: 'payload', executable: name.endsWith('.sh'),

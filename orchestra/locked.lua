@@ -658,6 +658,14 @@ function circular_locked(ctx, desync)
     DLOG("circular_locked: start from strategy 1 profile="..profile)
   end
 
+  -- Автодетект «домен ломается обходом» (lua/break-detector.lua): копим
+  -- отказы по хосту (RST/ретрансмиты) и при пороге отдаём хост внешней
+  -- дифференциальной проверке. Вызов после локов: выключенный локом 0
+  -- профиль дезинка не делает, приписывать ему отказы нельзя.
+  if type(z2r_break_track) == "function" and gate_host and gate_host ~= "" then
+    z2r_break_track(desync, gate_host, hrec.nstrategy)
+  end
+
   local verdict = VERDICT_PASS
   DLOG("circular_locked: current strategy "..hrec.nstrategy.." profile="..profile)
   while true do
