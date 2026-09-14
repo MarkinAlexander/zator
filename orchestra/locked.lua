@@ -539,6 +539,17 @@ function blob_override_execute(desync, verdict, instance, profile_key)
 end
 
 function circular_locked(ctx, desync)
+  -- Ранний гейт (зеркало circular_quality): пустые пакеты без RST не несут
+  -- ни решения лока, ни сигнала детектору. Профили с payload=...,empty
+  -- приводят сюда каждый ACK — полная работа оркестратора на них не нужна.
+  -- До orchestrate(): оставшиеся инстансы сами фильтруются по payload.
+  local tcp_gate = desync.dis and desync.dis.tcp
+  if tcp_gate and (not desync.dis.payload or #desync.dis.payload == 0) then
+    local rst_flag = (type(TH_RST) == "number") and TH_RST or 0x4
+    if client_scope_band(tcp_gate.th_flags or 0, rst_flag) == 0 then
+      return VERDICT_PASS
+    end
+  end
   orchestrate(ctx, desync)
   local allow_nohost_enabled = desync_allow_nohost(desync)
   if not desync.track and not allow_nohost_enabled then
