@@ -92,6 +92,7 @@ Normal flow:
 - `lib/netcheck.sh`: connectivity tests, DNS-spoof analysis, YouTube cluster probing, and the shared TLS-check engine `z2r_tls_*` (parallel single-attempt TLS 1.2/TLS 1.3 HEAD probes with `-L -k` + a Range download of up to 64KB when HEAD returns 2xx/3xx; classification by curl rc and HTTP code; any HTTP code including 4xx/5xx means the server answered → green ok, e.g. googlevideo root 404 is normal). The engine is the single source of truth for CLI `check_access` and WebUI `check_one_target_json` — verdict texts live here and are shared by both surfaces.
 - `lib/premium.sh`: easter-egg and premium menu branches.
 - `lib/strategies.sh`: active strategy status, orchestra lock helpers, per-profile strategy trial flow, custom RKN domain handling.
+- `lib/autoselect.sh`: независимый быстрый подбор стратегий (пункт «F» в подборе профиля/домена): baseline-гейт (лок 0 → незаблокированный домен не перебирается), HEAD-отсев без докачки (`Z2R_TLS_NO_DL=1`), early-exit после K зелёных (`Z2R_AUTOSELECT_K`, default 3), ранжирование финалистов докачкой (лучшая = max байт/с), warm-start из `cache/orchestra/autoselect.tsv`. Исследование и живые замеры — `docs/autoselect-research.md`.
 - `lib/dpidetect.sh`: дифференциальная диагностика «кто сломал домен» (ручной отладочный вход, п.12 подменю стратегий и п.9 управления доменами): две серии TLS-проб на временных runtime-локах (лок 0 = VERDICT_PASS = «без обхода» vs лок стратегии) движком `z2r_tls_*`, вердикты blocked_fixed / blocked_improved / blocked_nofix / not_blocked / broken_by_strategy / dead_domain, опциональное tcpdump-подтверждение RST (DPIDETECT_TCPDUMP=1). Также меню авто-исключённых доменов (`dpidetect_broken_list`).
 - `lib/submenus.sh`: menu wiring for strategies, provider, offload, and related actions.
 - `lib/actions.sh`: config reset, backup, firewall mode switch, UDP toggles, TLS blob switching, and other menu actions.
@@ -505,6 +506,27 @@ break-validator.sh), тоже только в `/tmp`:
 
 ```text
 break detect smoke ok
+```
+
+```bash
+bash tests/autoselect_smoke.sh
+```
+
+Тест быстрого подбора (`lib/autoselect.sh`), только в `/tmp`, фазовый мок curl
+(счётчики по типам проб screen/rank, планы по версиям TLS):
+
+- baseline-гейт: незаблокированная цель — ровно одна проба, перебор не
+  стартует, локи восстановлены;
+- основной сценарий: отсев с early-exit на K зелёных, ранжирование докачкой
+  по скорости, сохранение лучшей + запись победы в warm-кэш;
+- без зелёных — полный проход и восстановление локов профиля;
+- warm-start: порядок проверок из кэша (победители первыми), отмена ответом;
+- патч движка: `Z2R_TLS_NO_DL=1` реально убирает докачку.
+
+Успешный результат:
+
+```text
+autoselect smoke ok
 ```
 
 ## Local Inspection Notes

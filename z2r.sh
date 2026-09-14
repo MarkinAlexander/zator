@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh dpidetect.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh dpidetect.sh autoselect.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),

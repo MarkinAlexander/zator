@@ -54,13 +54,19 @@ orch_profile_try() {
     echo "Текущее состояние: ${current_state/auto/def}"
     local prompt_text="Введите номер стратегии 1-${max_strat} (0 - отключить профиль"
     if printf '%s' "$test_url" | grep -q '^https://'; then
-        prompt_text="${prompt_text}, A - автопрогон"
+        prompt_text="${prompt_text}, A - автопрогон, F - быстрый подбор"
     fi
     read -re -p "${prompt_text}, Enter - без изменений): " start_strat
     case "$start_strat" in
         a|A|а|А)
             if printf '%s' "$test_url" | grep -q '^https://'; then
                 orch_run_auto_sweep "profile" "$profile" "$proto_list" "$test_url" 1 "$max_strat"
+            fi
+            return
+            ;;
+        f|F)
+            if printf '%s' "$test_url" | grep -q '^https://'; then
+                autoselect_run "profile" "$profile" "$proto_list" "$test_url" 1 "$max_strat"
             fi
             return
             ;;
@@ -974,7 +980,7 @@ manage_custom_rkn_domain() {
         prev_strat=""
     fi
 
-    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех): " strategy_num
+    read -re -p "Введите номер стратегии для старта (Enter - текущая $current_strat, A - автопрогон всех, F - быстрый подбор): " strategy_num
     case "$strategy_num" in
         a|A|а|А)
             test_url="$user_domain"
@@ -982,6 +988,14 @@ manage_custom_rkn_domain() {
                 test_url="https://$test_url"
             fi
             orch_run_auto_sweep "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat"
+            return 0
+            ;;
+        f|F)
+            test_url="$user_domain"
+            if ! printf "%s" "$test_url" | grep -Eq '^https?://'; then
+                test_url="https://$test_url"
+            fi
+            autoselect_run "domain" "$user_domain" "tls" "$test_url" 1 "$max_strat"
             return 0
             ;;
     esac

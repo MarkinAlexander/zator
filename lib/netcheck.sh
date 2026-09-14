@@ -193,7 +193,10 @@ z2r_tls_check_target() {
     [ -n "$v12" ] || v12="X|000|-|-|-"
     [ -n "$v13" ] || v13="X|000|-|-|-"
     dl="skip"
-    if z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; then
+    # Z2R_TLS_NO_DL=1 (autoselect-отсев): докачка не нужна, зелёность
+    # определяется фактом ответа сервера — экономит до 2x10с на стратегию.
+    if [ -z "${Z2R_TLS_NO_DL:-}" ] \
+       && { z2r_tls_code_ok "$(z2r_tls_field "$v12" 2)" || z2r_tls_code_ok "$(z2r_tls_field "$v13" 2)"; }; then
         z2r_tls_probe_download "$url" >"$tmp/d1" 2>/dev/null </dev/null &
         d1_pid=$!
         z2r_tls_probe_download "$url" >"$tmp/d2" 2>/dev/null </dev/null &

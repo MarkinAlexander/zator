@@ -108,7 +108,7 @@ for f in lib/dpidetect.sh lib/netcheck.sh lib/submenus.sh z2r.sh; do
 done
 
 # ---- статическая разводка ----
-grep -q 'strategies.sh dpidetect.sh submenus.sh' "$REPO_DIR/z2r.sh" \
+grep -q 'Z2R_LIB_FILES=".*dpidetect.sh' "$REPO_DIR/z2r.sh" \
   || fail "z2r.sh: dpidetect.sh не подключён в Z2R_LIB_FILES"
 grep -q 'submenu_item "12" "Диагностика: домен ломает DPI или обход?"' "$REPO_DIR/lib/submenus.sh" \
   || fail "submenus.sh: нет пункта 12 в подменю стратегий"
