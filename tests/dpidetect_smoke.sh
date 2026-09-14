@@ -110,6 +110,15 @@ done
 # ---- статическая разводка ----
 grep -q 'Z2R_LIB_FILES=".*dpidetect.sh' "$REPO_DIR/z2r.sh" \
   || fail "z2r.sh: dpidetect.sh не подключён в Z2R_LIB_FILES"
+
+# Инвариант: каждая библиотека из Z2R_LIB_FILES реально подключается
+# source-строкой в z2r.sh (чек-лист без source = «command not found» в меню).
+while IFS= read -r lib; do
+  [ -n "$lib" ] || continue
+  grep -Fq "source \"\$LIB_DIR/$lib\"" "$REPO_DIR/z2r.sh" \
+    || fail "z2r.sh: $lib в Z2R_LIB_FILES, но нет source-строки"
+done < <(sed -n 's/^Z2R_LIB_FILES="\(.*\)"$/\1/p' "$REPO_DIR/z2r.sh" | tr ' ' '\n')
+
 grep -q 'submenu_item "12" "Диагностика: домен ломает DPI или обход?"' "$REPO_DIR/lib/submenus.sh" \
   || fail "submenus.sh: нет пункта 12 в подменю стратегий"
 grep -q '"12")' "$REPO_DIR/lib/submenus.sh" && grep -q 'dpidetect_menu' "$REPO_DIR/lib/submenus.sh" \
