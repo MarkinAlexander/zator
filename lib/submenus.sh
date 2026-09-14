@@ -955,6 +955,7 @@ strategies_submenu() {
       submenu_item "10" "Профиль 10: DNS антиспуф UDP:53 [${MENU_PROFILE_MAX_10:-0}]" "udp" "$STRATEGY_STATE_DNS_UDP"
     fi
     submenu_item "11" "Авторотация TCP/HTTP [${auto_state}]"
+    submenu_item "12" "Диагностика: домен ломает DPI или обход?"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1033,6 +1034,9 @@ strategies_submenu() {
         toggle_auto_mode
         pause_enter
         ;;
+      "12")
+        dpidetect_menu
+        ;;
       "0"|"")
         ORCH_ACTIVE_SCOPE="default"
         return
@@ -1066,6 +1070,9 @@ domains_submenu() {
     echo -e "${yellow}Исключения по подстрокам (netrogat_substrings.txt):${plain}"
     submenu_item "7" "Добавить подстроку в netrogat_substrings"
     submenu_item "8" "Просмотр/удаление подстрок netrogat_substrings"
+    echo ""
+    echo -e "${yellow}Диагностика:${plain}"
+    submenu_item "9" "Кто сломал домен? (DPI или обход)"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1095,6 +1102,9 @@ domains_submenu() {
         ;;
       "8")
         netrogat_substring_manage_lines
+        ;;
+      "9")
+        dpidetect_domain_ask
         ;;
       "0"|"")
         return
