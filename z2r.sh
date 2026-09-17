@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh dpidetect.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
@@ -338,7 +338,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua strategy-validator.sh; do
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua strategy-validator.sh break-detector.lua break-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -371,6 +371,8 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
       -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
+      -e 's#/opt/zapret2/lua/break-detector.lua#/opt/zator/lua/break-detector.lua#g' \
+      -e 's#/opt/zapret2/lua/break-validator.sh#/opt/zator/lua/break-validator.sh#g' \
       -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
       -e 's#/opt/zapret2/extra_strats#/opt/zator/extra_strats#g' \
       -e 's#/opt/zapret2/lists#/opt/zator/lists#g' \
@@ -381,8 +383,11 @@ z2r_migrate_to_zator() {
 
 z2r_migrate_to_zator
 
-# Проверяем наличие всех нужных lib-файлов, иначе запускаем внешний скрипт
-missing_libs=0
+# Проверяем наличие всех нужных lib-файлов. Часть обновителей (внешний
+# лаунчер при недоступном GitHub API) кладет только запасной список файлов —
+# новые модули могут отсутствовать. Сначала пробуем докачать недостающее
+# (best-effort), и только при неудаче уходим во внешний установщик.
+missing_libs=""
 # Предпочитаем $ZATOR_ROOT/z2r_lib (новое расположение), fallback на
 # $ZAPRET2_ROOT/z2r_lib (legacy/сразу после первой установки внешним лаунчером).
 if [ -f "$ZATOR_ROOT/z2r_lib/orchestra_state.sh" ]; then
@@ -392,13 +397,23 @@ else
 fi
 for lib in $Z2R_LIB_FILES; do
   if [ ! -f "$LIB_DIR/$lib" ]; then
-    missing_libs=1
-    break
+    missing_libs="$missing_libs $lib"
   fi
 done
 
-if [ "$missing_libs" -ne 0 ]; then
-  echo "Не найдены нужные файлы в $LIB_DIR. Запускаю внешний z2r..."
+if [ -n "$missing_libs" ]; then
+  mkdir -p "$LIB_DIR" 2>/dev/null || true
+  for lib in $missing_libs; do
+    z2r_download_project_file "$LIB_DIR/$lib" "lib/$lib" || true
+  done
+  missing_libs=""
+  for lib in $Z2R_LIB_FILES; do
+    [ -f "$LIB_DIR/$lib" ] || missing_libs="$missing_libs $lib"
+  done
+fi
+
+if [ -n "$missing_libs" ]; then
+  echo "Не найдены нужные файлы в $LIB_DIR:${missing_libs}. Запускаю внешний z2r..."
   z2r_exec_external_installer "$@"
 fi
 
@@ -438,6 +453,10 @@ source "$LIB_DIR/premium.sh"
 # Логика стратегий: статус, lock-файлы, быстрый подбор
 # Функции: get_current_strategies_info, orch_profile_try, Strats_Tryer
 source "$LIB_DIR/strategies.sh"
+
+# Дифференциальная диагностика «кто сломал домен» (ручной вход п.12/п.9)
+# и список авто-исключённых. Функции: dpidetect_run, dpidetect_menu
+source "$LIB_DIR/dpidetect.sh"
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
@@ -610,6 +629,11 @@ STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
 STRATEGY_VALIDATOR_ENTWARE_INIT="/opt/etc/init.d/S93z2r-strategy-validator"
 STRATEGY_VALIDATOR_SYSTEMD_UNIT="/etc/systemd/system/z2r-strategy-validator.service"
+BREAK_DETECTOR_LUA="$ZATOR_ROOT/lua/break-detector.lua"
+BREAK_VALIDATOR_WORKER="$ZATOR_ROOT/lua/break-validator.sh"
+BREAK_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-break-validator"
+BREAK_VALIDATOR_ENTWARE_INIT="/opt/etc/init.d/S94z2r-break-validator"
+BREAK_VALIDATOR_SYSTEMD_UNIT="/etc/systemd/system/z2r-break-validator.service"
 
 locked_lua_update_from_repo() {
   local tmp="${ORCH_LUA_LOCKED}.tmp"
@@ -645,6 +669,11 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
+  # Автодетект «домен ломается обходом»: lua-модуль в nfqws2 + внешний демон.
+  # Не обязательный модуль: при недоступности сети просто деградирует.
+  z2r_download_project_file "$BREAK_DETECTOR_LUA" "lua/break-detector.lua" || return 1
+  z2r_download_project_file "$BREAK_VALIDATOR_WORKER" "lua/break-validator.sh" || return 1
+  chmod +x "$BREAK_VALIDATOR_WORKER"
 }
 
 # client-scope-config.lua is a persistent generated state file. Download the
@@ -726,6 +755,84 @@ strategy_validator_remove_service() {
       fi
       ;;
   esac
+}
+
+# Демон дифференциальной проверки «домен ломается обходом» (зеркало
+# strategy_validator_*): очередь /tmp/z2r-break-check принадлежит nobody,
+# туда пишет lua-модуль из процесса nfqws2.
+break_validator_install_service() {
+  local validator_path="/opt/bin:/opt/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  if ! PATH="$validator_path" command -v curl >/dev/null 2>&1; then
+    echo -e "${red}Для break-validator нужен curl.${plain}"
+    return 1
+  fi
+
+  case "$OSystem" in
+    WRT)
+      z2r_download_project_file "$BREAK_VALIDATOR_OPENWRT_INIT" "init.d/openwrt/z2r-break-validator" || return 1
+      chmod +x "$BREAK_VALIDATOR_OPENWRT_INIT"
+      "$BREAK_VALIDATOR_OPENWRT_INIT" enable 2>/dev/null || true
+      "$BREAK_VALIDATOR_OPENWRT_INIT" restart 2>/dev/null || "$BREAK_VALIDATOR_OPENWRT_INIT" start 2>/dev/null || return 1
+      ;;
+    entware)
+      z2r_download_project_file "$BREAK_VALIDATOR_ENTWARE_INIT" "Entware/z2r-break-validator" || return 1
+      chmod +x "$BREAK_VALIDATOR_ENTWARE_INIT"
+      "$BREAK_VALIDATOR_ENTWARE_INIT" restart 2>/dev/null || "$BREAK_VALIDATOR_ENTWARE_INIT" start 2>/dev/null || return 1
+      ;;
+    VPS)
+      if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /etc/systemd/system ]; then
+        echo -e "${red}Для break-validator на этой VPS нужен systemd.${plain}"
+        return 1
+      fi
+      cat > "$BREAK_VALIDATOR_SYSTEMD_UNIT" <<'EOF'
+[Unit]
+Description=z2r break validation worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'mkdir -p /tmp/z2r-break-check && user=$(/bin/sed -n "s/^WS_USER=//p" @ZAPRET2_ROOT@/config | /usr/bin/head -n1); [ -n "$user" ] || user=nobody; /bin/chown "$user" /tmp/z2r-break-check && /bin/chmod 700 /tmp/z2r-break-check'
+ExecStart=@ZATOR_ROOT@/lua/break-validator.sh --daemon
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      sed -i \
+        -e "s#@ZAPRET2_ROOT@#$ZAPRET2_ROOT#g" \
+        -e "s#@ZATOR_ROOT@#$ZATOR_ROOT#g" \
+        "$BREAK_VALIDATOR_SYSTEMD_UNIT"
+      systemctl daemon-reload
+      systemctl enable z2r-break-validator.service
+      systemctl restart z2r-break-validator.service
+      ;;
+  esac
+}
+
+break_validator_remove_service() {
+  case "$OSystem" in
+    WRT)
+      [ -f "$BREAK_VALIDATOR_OPENWRT_INIT" ] || return 0
+      "$BREAK_VALIDATOR_OPENWRT_INIT" stop 2>/dev/null || true
+      "$BREAK_VALIDATOR_OPENWRT_INIT" disable 2>/dev/null || true
+      rm -f "$BREAK_VALIDATOR_OPENWRT_INIT"
+      ;;
+    entware)
+      [ -f "$BREAK_VALIDATOR_ENTWARE_INIT" ] || return 0
+      "$BREAK_VALIDATOR_ENTWARE_INIT" stop 2>/dev/null || true
+      rm -f "$BREAK_VALIDATOR_ENTWARE_INIT"
+      ;;
+    VPS)
+      if command -v systemctl >/dev/null 2>&1 && [ -f "$BREAK_VALIDATOR_SYSTEMD_UNIT" ]; then
+        systemctl disable --now z2r-break-validator.service >/dev/null 2>&1 || true
+        rm -f "$BREAK_VALIDATOR_SYSTEMD_UNIT"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
+  rm -rf /tmp/z2r-break-check 2>/dev/null || true
 }
 
 # Проверяем locked.lua, при отсутствии пробуем скачать из репозитория
@@ -1013,6 +1120,7 @@ get_repo() {
   rst_guard_lua_update_from_repo || true
   circular_runtime_update_from_repo || return 1
   strategy_validator_install_service || return 1
+  break_validator_install_service || true
   # netrogat.txt — пользовательский список исключений: существующий файл не
   # перезаписываем (иначе обновления затирают добавленные домены). Остальные
   # списки в цикле — проектные, обновляем их как есть.
@@ -1021,6 +1129,11 @@ get_repo() {
   done
   if [ ! -f "$ZATOR_ROOT/lists/netrogat.txt" ]; then
     z2r_download_project_file "$ZATOR_ROOT/lists/netrogat.txt" "lists/netrogat.txt" || touch "$ZATOR_ROOT/lists/netrogat.txt"
+  fi
+  # z2r_broken_hosts.txt — авто-исключения «ломается обходом» (break-validator)
+  # плюс ручные правки пользователя: существующий файл не перезаписываем.
+  if [ ! -f "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" ]; then
+    z2r_download_project_file "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" "lists/z2r_broken_hosts.txt" || touch "$ZATOR_ROOT/lists/z2r_broken_hosts.txt"
   fi
   z2r_download_project_file "$fake_archive" "fake_files.tar.gz" || return 1
   tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
@@ -1147,6 +1260,7 @@ remove_zapret() {
      echo "Удаляем папку zapret2"
      webui_stop_service >/dev/null 2>&1 || true
      strategy_validator_remove_service
+     break_validator_remove_service
      rm -rf "$ZAPRET2_ROOT"
  else
      echo "Папка zapret2 не существует."
@@ -1169,6 +1283,7 @@ zator_remove() {
     return 0
   fi
   strategy_validator_remove_service || true
+  break_validator_remove_service || true
   webui_remove || true
   # До эпохи единого locked.tsv состояние профилей жило в /opt/etc/z2r —
   # убираем, чтобы после полного удаления не оставалось «призраков».
@@ -2425,6 +2540,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
       locked_lua_update_from_repo || echo -e "${yellow}locked.lua не обновлён (сеть недоступна).${plain}"
       circular_runtime_update_from_repo || echo -e "${yellow}Lua-модули circular не обновлены (сеть недоступна).${plain}"
       strategy_validator_install_service || true
+      break_validator_install_service || true
       mkdir -p "$ORCH_DIR"
       chmod 777 "$ORCH_DIR" 2>/dev/null || true
       menu_action_update_config_reset || true

@@ -1578,6 +1578,13 @@ function circular_quality(ctx, desync)
     local is_failure = failure_detector(desync, crec)
     local is_success = not is_failure and success_detector(desync, crec)
 
+    -- Автодетект «домен ломается обходом» (lua/break-detector.lua): те же
+    -- вердикты детекторов идут в пер-хостовый счётчик; при пороге отказов
+    -- хост уходит на внешнюю дифференциальную проверку.
+    if type(z2r_break_note) == "function" and hostkey then
+        z2r_break_note(desync, hostkey, hrec.nstrategy, is_failure, is_success)
+    end
+
     -- Check if we should use locked strategy
     local locked = slm_get_locked(desync.arg.key, hostkey, scope)
     if locked then
