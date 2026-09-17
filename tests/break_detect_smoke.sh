@@ -51,6 +51,10 @@ awk '/locked == 0 then/{z=1} /z2r_break_track\(/{if(!z) exit 1}' "$REPO_DIR/orch
   || fail "locked.lua: z2r_break_track вызывается до ветки locked==0"
 
 # Модуль: ключевые элементы.
+grep -q '/tmp/z2r-break-verdicts.tsv' "$REPO_DIR/lua/break-detector.lua"   || fail "break-detector.lua: нет чтения RAM-кэша вердиктов"
+grep -q 'z2r_break_verdict_cooldown' "$REPO_DIR/lua/break-detector.lua"   || fail "break-detector.lua: нет переиспользования вердиктов"
+grep -q 'VERDICTS_FILE=' "$REPO_DIR/lua/break-validator.sh"   || fail "break-validator.sh: нет кэша вердиктов"
+grep -q 'verdict_cleanup' "$REPO_DIR/lua/break-validator.sh"   || fail "break-validator.sh: нет периодической чистки кэша"
 grep -q '/tmp/z2r-break-check' "$REPO_DIR/lua/break-detector.lua" || fail "break-detector.lua: нет очереди /tmp"
 grep -q 'function z2r_break_note' "$REPO_DIR/lua/break-detector.lua" || fail "break-detector.lua: нет z2r_break_note"
 grep -q 'function z2r_break_track' "$REPO_DIR/lua/break-detector.lua" || fail "break-detector.lua: нет z2r_break_track"
@@ -161,6 +165,32 @@ PATH="$TMP_DIR/bin:$PATH" \
   sh "$REPO_DIR/lua/break-validator.sh" "$TMP_DIR/queue/request.$id" >/dev/null 2>&1
 [ -z "$(cat "$TMP_DIR/curlcount")" ] || fail "EXCLUDED: curl не должен вызываться"
 [ "$(cut -f2 "$TMP_DIR/queue/result.$id")" = "EXCLUDED" ] || fail "EXCLUDED: неверный вердикт"
+
+# ---- кэш вердиктов: пишется, чистится ----
+V="$TMP_DIR/verdicts.tsv"
+rm -rf "$TMP_DIR/queue" "$TMP_DIR/exclude" "$TMP_DIR/logdir"
+mkdir -p "$TMP_DIR/queue" "$TMP_DIR/logdir"
+: > "$TMP_DIR/exclude"
+id="1700000010"
+printf '%s	%s	%s	%s	%s
+' "$id" "vhost.example.com" "vhost.example.com" "tls" "3"   > "$TMP_DIR/queue/request.$id"
+BREAK_CURL_COUNT="$TMP_DIR/curlcount" BREAK_CURL_PLAN="ok fail fail" Z2R_BREAK_QUEUE="$TMP_DIR/queue" Z2R_BREAK_EXCLUDE="$TMP_DIR/exclude" Z2R_BREAK_LOG="$TMP_DIR/logdir/broken.tsv" Z2R_BREAK_VERDICTS="$V" Z2R_BREAK_SETTLE=0 PATH="$TMP_DIR/bin:$PATH"   sh "$REPO_DIR/lua/break-validator.sh" "$TMP_DIR/queue/request.$id" >/dev/null 2>&1 || true
+[ -s "$V" ] || fail "кэш вердиктов: файл не создан"
+awk -F'	' '$1=="vhost.example.com" && $2=="BROKEN" && $3+0>0 {found=1} END{exit !found}' "$V"   || fail "кэш вердиктов: нет строки host/BROKEN/ts"
+# чистка: протухшая запись уходит, свежая остаётся
+now="$(date +%s)"
+stale=$(( now - 100000 ))
+printf 'old.example.com	OK_TRANSIENT	%s
+' "$stale" >> "$V"
+# чистим прямым вызовом функции демона с подменёнными переменными
+(
+  VERDICTS_FILE="$V"
+  VERDICTS_TTL=86400
+  eval "$(sed -n '/^verdict_cleanup()/,/^}/p' "$REPO_DIR/lua/break-validator.sh")"
+  verdict_cleanup
+)
+grep -q 'old.example.com' "$V" && fail "чистка: протухшая запись не удалена"
+grep -q 'vhost.example.com' "$V" || fail "чистка: свежая запись удалена"
 
 # Битый TSV (недопустимые символы в hostname) — запрос молча удаляется.
 rm -rf "$TMP_DIR/queue"

@@ -26,6 +26,46 @@ local Z2R_BREAK_QUEUE_DIR = "/tmp/z2r-break-check"
 local Z2R_BREAK_REQUEST_PREFIX = Z2R_BREAK_QUEUE_DIR .. "/request."
 local Z2R_BREAK_RESULT_PREFIX = Z2R_BREAK_QUEUE_DIR .. "/result."
 
+-- RAM-кэш вердиктов демона (tmpfs, «hostkey<TAB>вердикт<TAB>unixtime»):
+-- свежий вердикт переиспользуется — повторная диффпроба не гоняется, кулдаун
+-- переживает рестарт nfqws2. Демон периодически чистит протухшие записи.
+local Z2R_BREAK_VERDICTS_PATH = "/tmp/z2r-break-verdicts.tsv"
+local Z2R_BREAK_VERDICTS = nil
+local Z2R_BREAK_VERDICTS_LOADED_AT = 0
+local Z2R_BREAK_VERDICTS_TTL = 30    -- перечитываем кэш раз в 30с
+local Z2R_BREAK_CD_BROKEN = 6 * 3600 -- кулдаун после BROKEN
+local Z2R_BREAK_CD_OTHER = 900       -- кулдаун после остальных вердиктов
+
+local function z2r_break_verdicts_load(now)
+  if Z2R_BREAK_VERDICTS and (now - Z2R_BREAK_VERDICTS_LOADED_AT) < Z2R_BREAK_VERDICTS_TTL then
+    return Z2R_BREAK_VERDICTS
+  end
+  Z2R_BREAK_VERDICTS_LOADED_AT = now
+  local cache = {}
+  local f = io.open(Z2R_BREAK_VERDICTS_PATH, "r")
+  if f then
+    for line in f:lines() do
+      local host, verdict, ts = line:match("^([%w_.%-]+)\t([A-Z_]+)\t(%d+)$")
+      if host then cache[host] = { verdict = verdict, ts = tonumber(ts) or 0 } end
+    end
+    f:close()
+  end
+  Z2R_BREAK_VERDICTS = cache
+  return cache
+end
+
+-- Свежий вердикт по хосту: возвращает кулдаун (сек), если пробу можно
+-- пропустить, иначе nil.
+local function z2r_break_verdict_cooldown(host, now)
+  local cache = z2r_break_verdicts_load(now)
+  local entry = cache[host]
+  if not entry then return nil end
+  local window = (entry.verdict == "BROKEN") and Z2R_BREAK_CD_BROKEN or Z2R_BREAK_CD_OTHER
+  local age = now - entry.ts
+  if age < 0 or age >= window then return nil end
+  return window - age
+end
+
 local Z2R_BREAK_STATE = {}      -- hostkey -> запись состояния
 local Z2R_BREAK_SEQ = 0
 local Z2R_BREAK_STATE_CAP = 256 -- предел памяти на роутере
@@ -173,17 +213,27 @@ function z2r_break_note(desync, hostkey, strategy, is_failure, is_success)
     if rec.fails >= cfg.fails
        and rec.inflight == nil
        and now >= (rec.cooldown_until or 0) then
-      local hostname = nil
-      if type(desync_hostname) == "function" then
-        hostname = desync_hostname(desync)
-      end
-      hostname = hostname or (desync.track and desync.track.hostname) or host
-      if z2r_break_hostname_ok(hostname) then
-        local proto = "tls"
-        if desync.l7payload == "http_req" or desync.l7payload == "http_reply" then
-          proto = "http"
+      -- Переиспользование RAM-кэша вердиктов: если демон недавно уже выносил
+      -- вердикт по этому хосту (в т.ч. до рестарта nfqws2) — кулдаун из кэша,
+      -- повторную диффпробу не гоняем.
+      local cd = z2r_break_verdict_cooldown(host, now)
+      if cd then
+        rec.cooldown_until = now + cd
+        rec.fails = 0
+        rec.first_fail = nil
+      else
+        local hostname = nil
+        if type(desync_hostname) == "function" then
+          hostname = desync_hostname(desync)
         end
-        z2r_break_enqueue(rec, hostname, proto, strategy, now)
+        hostname = hostname or (desync.track and desync.track.hostname) or host
+        if z2r_break_hostname_ok(hostname) then
+          local proto = "tls"
+          if desync.l7payload == "http_req" or desync.l7payload == "http_reply" then
+            proto = "http"
+          end
+          z2r_break_enqueue(rec, hostname, proto, strategy, now)
+        end
       end
     end
   elseif is_success then

@@ -24,6 +24,11 @@
 QUEUE_DIR="${Z2R_BREAK_QUEUE:-/tmp/z2r-break-check}"
 EXCLUDE_FILE="${Z2R_BREAK_EXCLUDE:-/opt/zator/lists/z2r_broken_hosts.txt}"
 LOG_FILE="${Z2R_BREAK_LOG:-/opt/zator/extra_strats/cache/orchestra/broken_hosts.tsv}"
+# Кэш вердиктов в оперативной памяти (tmpfs): «хост → вердикт → время».
+# Читает lua-модуль (переиспользование: свежий вердикт не гоняет повторную
+# диффпробу даже после рестарта nfqws2); демон периодически чистит протухшее.
+VERDICTS_FILE="${Z2R_BREAK_VERDICTS:-/tmp/z2r-break-verdicts.tsv}"
+VERDICTS_TTL="${Z2R_BREAK_VERDICT_TTL:-86400}"
 SETTLE="${Z2R_BREAK_SETTLE:-3}"
 PROBE_MAXTIME="${Z2R_BREAK_MAXTIME:-12}"
 Z2R_CURL_UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
@@ -35,6 +40,33 @@ if [ -z "$CURL_BIN" ]; then
     echo "break-validator: curl is required" >&2
     exit 127
 fi
+
+# ---- кэш вердиктов (RAM) ----
+
+verdict_remember() {
+    # $1 hostkey, $2 verdict — атомарный upsert в TSV
+    local host="$1" verdict="$2" now tmp
+    touch "$VERDICTS_FILE" 2>/dev/null || return 0
+    now="$(date +%s)"
+    tmp="${VERDICTS_FILE}.tmp.$$"
+    awk -F'\t' -v OFS='\t' -v h="$host" -v v="$verdict" -v ts="$now" '
+        BEGIN { seen = 0 }
+        $1 == h { print h, v, ts; seen = 1; next }
+        { print }
+        END { if (!seen) print h, v, ts }
+    ' "$VERDICTS_FILE" 2>/dev/null > "$tmp" && mv -f "$tmp" "$VERDICTS_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+verdict_cleanup() {
+    # Протухшие записи (старше VERDICTS_TTL) удаляем; BROKEN живёт в
+    # постоянном exclude-файле, кэш ему не нужен.
+    [ -f "$VERDICTS_FILE" ] || return 0
+    local cutoff tmp
+    cutoff=$(( $(date +%s) - VERDICTS_TTL ))
+    tmp="${VERDICTS_FILE}.clean.$$"
+    awk -F'\t' -v c="$cutoff" '$3 + 0 >= c' "$VERDICTS_FILE" 2>/dev/null > "$tmp" \
+        && mv -f "$tmp" "$VERDICTS_FILE" 2>/dev/null || rm -f "$tmp"
+}
 
 # Горячий exclude-файл: атомарные add/remove через tmp+mv (его читает
 # locked.lua с TTL 2с, частые записи безопасны — файл крошечный).
@@ -136,6 +168,10 @@ process_request() {
         log_broken "$hostname" "$strategy"
     fi
 
+    # Вердикт — в RAM-кэш: lua-модуль переиспользует его (кулдаун переживает
+    # рестарт nfqws2), чистка протухшего — в цикле демона.
+    verdict_remember "$hostkey" "$verdict"
+
     result=$QUEUE_DIR/result.$id
     tmp=$result.tmp.$$
     printf '%s\t%s\t%s\t%s\n' "$id" "$verdict" "$hostkey" "$strategy" > "$tmp" \
@@ -146,10 +182,18 @@ process_request() {
 
 if [ "$1" = "--daemon" ]; then
     mkdir -p "$QUEUE_DIR" || exit 1
+    verdict_cleanup
     while :; do
         for req in "$QUEUE_DIR"/request.[0-9]*; do
             [ -f "$req" ] && process_request "$req"
         done
+        # Периодическая чистка кэша вердиктов: раз в час, протухшее (старше
+        # VERDICTS_TTL) удаляется — хост позже проверится заново.
+        CLEAN_COUNTER=$(( ${CLEAN_COUNTER:-0} + 1 ))
+        if [ "$CLEAN_COUNTER" -ge 1800 ]; then
+            verdict_cleanup
+            CLEAN_COUNTER=0
+        fi
         sleep 2
     done
 fi
