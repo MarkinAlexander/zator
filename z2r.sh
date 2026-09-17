@@ -1606,12 +1606,15 @@ webui_has_busybox_httpd() {
 }
 
 webui_server_type() {
-  if PATH="$WEBUI_PATH" command -v uhttpd >/dev/null 2>&1; then
-    echo "uhttpd"
+  # На Keenetic при наличии обоих серверов предпочтителен родной uhttpd_kn
+  # (Entware-uhttpd рядом с компонентами прошивки конфликтует — кейс из
+  # телеграма: панель ломилась в uhttpd, лечилось только выносом DDNS).
+  if PATH="$WEBUI_PATH" command -v uhttpd_kn >/dev/null 2>&1 || [ -x /opt/sbin/uhttpd_kn ]; then
+    echo "uhttpd_kn"
     return
   fi
-  if PATH="$WEBUI_PATH" command -v uhttpd_kn >/dev/null 2>&1; then
-    echo "uhttpd_kn"
+  if PATH="$WEBUI_PATH" command -v uhttpd >/dev/null 2>&1; then
+    echo "uhttpd"
     return
   fi
   if PATH="$WEBUI_PATH" command -v httpd >/dev/null 2>&1; then
@@ -1694,10 +1697,11 @@ webui_ensure_runtime_deps() {
     if PATH="$WEBUI_PATH" command -v busybox >/dev/null 2>&1 && PATH="$WEBUI_PATH" busybox --list 2>/dev/null | grep -qx 'nohup'; then
       return 0
     fi
-    echo -e "${red}Не удалось найти или установить nohup для web UI.${plain}"
-    [ "$OSystem" = "entware" ] && echo -e "${yellow}Для Keenetic/Entware нужен пакет coreutils-nohup.${plain}"
-    [ "$OSystem" = "WRT" ] && echo -e "${yellow}Для OpenWrt нужен пакет coreutils-nohup или BusyBox с applet nohup.${plain}"
-    return 1
+    # nohup недоступен и не установился (например, фиды opkg легли) — это
+    # НЕ приговор: run-webui.sh умеет стартовать без nohup (setsid или
+    # trap-игнор + фоновый запуск с редиректом). Предупреждаем и продолжаем.
+    echo -e "${yellow}nohup не найден и не установился (пакетные фиды недоступны?).${plain}"
+    echo -e "${yellow}Панель запустится без него (setsid/фон с редиректом) — на работу не влияет.${plain}"
   fi
 
   return 0
@@ -1821,29 +1825,37 @@ EOF
 }
 
 webui_start_service() {
-  case "$OSystem" in
-    "WRT")
-      /etc/init.d/z2r-webui start
-      ;;
-    "entware")
-      /opt/etc/init.d/S92z2r-webui start
-      ;;
-    *)
-      if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/z2r-webui.service ]; then
-        systemctl restart z2r-webui.service
-      else
-        bash "$WEBUI_RUNNER" restart >/dev/null 2>&1 || bash "$WEBUI_RUNNER" start >/dev/null 2>&1
-      fi
-      ;;
-  esac
-  case "$(webui_status_text)" in
-    running:*) return 0 ;;
-  esac
-  sleep 1
-  case "$(webui_status_text)" in
-    running:*) return 0 ;;
-  esac
-  echo -e "${yellow}Web UI не поднялся после запуска (статус: $(webui_status_text)) — запустите «Диагностика Web UI» в этом подменю.${plain}"
+  local attempt
+  for attempt in 1 2; do
+    case "$OSystem" in
+      "WRT")
+        /etc/init.d/z2r-webui start
+        ;;
+      "entware")
+        /opt/etc/init.d/S92z2r-webui start
+        ;;
+      *)
+        if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/z2r-webui.service ]; then
+          systemctl restart z2r-webui.service
+        else
+          bash "$WEBUI_RUNNER" restart >/dev/null 2>&1 || bash "$WEBUI_RUNNER" start >/dev/null 2>&1
+        fi
+        ;;
+    esac
+    case "$(webui_status_text)" in
+      running:*) return 0 ;;
+    esac
+    sleep 1
+    case "$(webui_status_text)" in
+      running:*) return 0 ;;
+    esac
+    # Первая попытка не удалась: порт мог ещё держать умирающий uhttpd —
+    # короткая пауза и второй заход перед тем, как признавать неудачу.
+    if [ "$attempt" = "1" ]; then
+      sleep 2
+    fi
+  done
+  echo -e "${yellow}Web UI не поднялся после запуска (статус: $(webui_status_text)) — запустите «Диагностику Web UI» в этом подменю.${plain}"
   return 1
 }
 
@@ -1862,6 +1874,16 @@ webui_stop_service() {
       [ -x "$WEBUI_RUNNER" ] && "$WEBUI_RUNNER" stop >/dev/null 2>&1 || true
       ;;
   esac
+  # Даём порту освободиться: старт сразу после стопа ловит ещё умирающий
+  # uhttpd (кейс с Keenetic: панель поднималась только со второго запуска).
+  local i
+  if command -v netstat >/dev/null 2>&1; then
+    for i in 1 2 3 4; do
+      netstat -ltn 2>/dev/null | grep -q "[:.]${WEBUI_PORT:-17682}[[:space:]]" || return 0
+      sleep 1
+    done
+  fi
+  return 0
 }
 
 webui_restart() {
@@ -1899,7 +1921,11 @@ webui_status_human() {
           echo -e "${red}Файлы панели не установлены либо повреждены (нет run-webui.sh) — установите панель (п.1).${plain}"
           ;;
         *)
-          echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (лог ${WEBUI_ROOT}/run/webui.log).${plain}"
+          if [ "$OSystem" = "WRT" ] && command -v logread >/dev/null 2>&1; then
+            echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (ошибки procd в «logread | grep -i uhttpd»).${plain}"
+          else
+            echo -e "${red}Остановлена: сервер есть (${server}), запуск не удался — см. диагностику (лог ${WEBUI_ROOT}/run/webui.log).${plain}"
+          fi
           ;;
       esac
       ;;
@@ -1937,8 +1963,12 @@ webui_diagnostics() {
   echo -e "${yellow}Веб-сервер:${plain}"
   echo "  webui_server_type: $(webui_server_type 2>/dev/null || echo '?')"
   for srv in uhttpd uhttpd_kn httpd; do
+    # uhttpd_kn дополнительно ищем файлом: встречается установленный пакет
+    # с бинарём вне PATH (кейс: диагностике «нет», а opkg показывает пакет).
     if PATH="$WEBUI_PATH" command -v "$srv" >/dev/null 2>&1; then
       echo -e "  ${srv}: ${green}$(PATH="$WEBUI_PATH" command -v "$srv")${plain}"
+    elif [ "$srv" = "uhttpd_kn" ] && [ -x /opt/sbin/uhttpd_kn ]; then
+      echo -e "  ${srv}: ${green}/opt/sbin/uhttpd_kn (вне PATH)${plain}"
     else
       echo "  ${srv}: нет"
     fi
@@ -2002,6 +2032,12 @@ webui_diagnostics() {
     tail -n 20 "$logfile" 2>/dev/null || echo "  (лог не читается)"
   else
     echo "  лога нет"
+  fi
+  # На OpenWrt панель стартует через procd: stdout/stderr демона идут в
+  # syslog, webui.log не создаётся — показываем syslog-хвост сразу.
+  if [ "$OSystem" = "WRT" ] && command -v logread >/dev/null 2>&1; then
+    echo -e "${yellow}Syslog (uhttpd/webui, OpenWrt/procd):${plain}"
+    logread 2>/dev/null | grep -iE "uhttpd|webui|run-webui" | tail -n 15 || echo "  (совпадений нет)"
   fi
 
   echo -e "${yellow}Файлы панели:${plain}"
