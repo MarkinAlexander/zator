@@ -155,6 +155,78 @@ z2r_download_project_file() {
   return 1
 }
 
+# --- Параллельная доставка zator-контента -------------------------------
+# На слабых CPU роутеров каждый HTTPS-хендшейк к GitHub стоит ~0.5 c,
+# и 20+ последовательных скачиваний в get_repo дают 10+ секунд молчания
+# на установке. Батч качает всё одним curl --parallel; не скачавшиеся
+# файлы добираются поштучно штатным z2r_download_project_file
+# (зеркала, локальные каталоги, wget-фолбэк, свои сообщения об ошибках).
+Z2R_BATCH_DIR=""
+Z2R_BATCH_DESTS=()
+Z2R_BATCH_RELS=()
+z2r_batch_begin() {
+  Z2R_BATCH_DIR="/tmp/z2r_batch_$$"
+  rm -rf "$Z2R_BATCH_DIR"
+  mkdir -p "$Z2R_BATCH_DIR" || return 1
+  Z2R_BATCH_DESTS=()
+  Z2R_BATCH_RELS=()
+}
+z2r_batch_queue() {
+  # $1 = dest, $2 = путь в репозитории проекта
+  local dest="$1" rel="$2" src tmp
+  case "$rel" in
+    /*|../*|*/../*|*/..) return 1 ;;
+  esac
+  # источники без сети — в порядке z2r_download_project_file
+  for src in "${Z2R_PROJECT_DIR:-}" "${DEPLOY_PAYLOAD_DIR:-}"; do
+    if [ -n "$src" ] && [ -f "$src/$rel" ]; then
+      mkdir -p "$(dirname "$dest")"
+      tmp="${dest}.z2rtmp.$$"
+      cp -f "$src/$rel" "$tmp" && mv -f "$tmp" "$dest"
+      return 0
+    fi
+  done
+  # офлайн-установка: существующее дерево считаем актуальным, сеть не трогаем
+  if [ "${Z2R_OFFLINE:-0}" = "1" ] && [ -f "$dest" ]; then
+    return 0
+  fi
+  Z2R_BATCH_DESTS+=("$dest")
+  Z2R_BATCH_RELS+=("$rel")
+}
+z2r_batch_commit() {
+  local i dest rc=0
+  local -a args=()
+  if [ "${#Z2R_BATCH_RELS[@]}" -gt 0 ] && command -v curl >/dev/null 2>&1; then
+    for i in "${!Z2R_BATCH_RELS[@]}"; do
+      args+=( -o "$Z2R_BATCH_DIR/$i" "${Z2R_PROJECT_RAW_BASE}/${Z2R_BATCH_RELS[$i]}" )
+    done
+    # 404/сбой одного файла не роняет батч: недостающие доберём поштучно
+    curl -fsS --connect-timeout 10 --parallel --parallel-max 6 --retry 1 \
+      "${args[@]}" >/dev/null 2>&1 || true
+  fi
+  for i in "${!Z2R_BATCH_RELS[@]}"; do
+    dest="${Z2R_BATCH_DESTS[$i]}"
+    if [ -s "$Z2R_BATCH_DIR/$i" ]; then
+      mkdir -p "$(dirname "$dest")"
+      # через tmp в целевом каталоге: mv в пределах ФС атомарен, nfqws2
+      # не увидит полуфайл
+      cp -f "$Z2R_BATCH_DIR/$i" "${dest}.z2rtmp.$$" && mv -f "${dest}.z2rtmp.$$" "$dest"
+    else
+      z2r_download_project_file "$dest" "${Z2R_BATCH_RELS[$i]}" || rc=1
+    fi
+  done
+  rm -rf "$Z2R_BATCH_DIR"
+  return $rc
+}
+# обязательные для установки файлы: любой пустой/отсутствующий => неудача
+z2r_batch_require() {
+  local f
+  for f in "$@"; do
+    [ -s "$f" ] || return 1
+  done
+  return 0
+}
+
 z2r_download_project_stdout() {
   local rel="$1"
   local tmp="/tmp/z2r_download_$$"
@@ -1120,85 +1192,113 @@ get_repo() {
   z2r_install_runtime_libs_from_archive || return 1
   client_scope_lua_config_install_default || return 1
   chmod 777 "$ORCH_DIR" 2>/dev/null || true
-  locked_lua_update_from_repo || true
-  rst_guard_lua_update_from_repo || true
-  circular_runtime_update_from_repo || return 1
-  strategy_validator_install_service || return 1
-  break_validator_install_service || true
-  # netrogat.txt — пользовательский список исключений: существующий файл не
-  # перезаписываем (иначе обновления затирают добавленные домены). Остальные
-  # списки в цикле — проектные, обновляем их как есть.
+
+  # Весь проектный контент качаем одним параллельным батчем вместо 20+
+  # одиночных curl (минуты молчания на роутерах, см. z2r_batch_begin).
+  z2r_batch_begin || return 1
+
+  # lua оркестрации; locked/rst при неудаче не фатальны (выше по флоу
+  # установки есть повторная попытка locked.lua), остальное проверяем
+  # после commit через z2r_batch_require.
+  z2r_batch_queue "$ORCH_LUA_LOCKED" "orchestra/locked.lua"
+  z2r_batch_queue "$RST_GUARD_LUA" "lua/rst-guard.lua"
+  z2r_batch_queue "$CIRCULAR_DETECTOR_LUA" "lua/combined-detector.lua"
+  z2r_batch_queue "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua"
+  z2r_batch_queue "$DNS_CLONE_LUA" "lua/dns-clone.lua"
+  z2r_batch_queue "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua"
+  z2r_batch_queue "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh"
+  z2r_batch_queue "$BREAK_DETECTOR_LUA" "lua/break-detector.lua"
+  z2r_batch_queue "$BREAK_VALIDATOR_WORKER" "lua/break-validator.sh"
+  # проектные списки; пользовательские (netrogat, z2r_broken_hosts,
+  # netrogat_substrings, TCP_Custom) при наличии на месте не трогаем —
+  # иначе обновления затирают добавленные вручную домены
+  local listfile
   for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
-    z2r_download_project_file "$ZATOR_ROOT/lists/$listfile" "lists/$listfile" || return 1
+    z2r_batch_queue "$ZATOR_ROOT/lists/$listfile" "lists/$listfile"
   done
-  if [ ! -f "$ZATOR_ROOT/lists/netrogat.txt" ]; then
-    z2r_download_project_file "$ZATOR_ROOT/lists/netrogat.txt" "lists/netrogat.txt" || touch "$ZATOR_ROOT/lists/netrogat.txt"
+  [ -f "$ZATOR_ROOT/lists/netrogat.txt" ] || z2r_batch_queue "$ZATOR_ROOT/lists/netrogat.txt" "lists/netrogat.txt"
+  [ -f "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" ] || z2r_batch_queue "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" "lists/z2r_broken_hosts.txt"
+  [ -f "$ZATOR_ROOT/lists/netrogat_substrings.txt" ] || z2r_batch_queue "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt"
+  z2r_batch_queue "$fake_archive" "fake_files.tar.gz"
+  z2r_batch_queue "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt"
+  z2r_batch_queue "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt"
+  [ -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ] || z2r_batch_queue "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt"
+  z2r_batch_queue "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt"
+  z2r_batch_queue "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt"
+  [ -f "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" ] || z2r_batch_queue "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" "extra_strats/TCP/RKN/Domains_By_Substring.txt"
+  [ -f "$ZATOR_ROOT/files/fake/custom_tls.bin" ] || z2r_batch_queue "$ZATOR_ROOT/files/fake/custom_tls.bin" "fake/custom_tls.bin"
+  mkdir -p "$ZATOR_ROOT/data/providers"
+  z2r_batch_queue "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"
+  # config.default и keenetic-policy.sh — zapret2-native, остаются в $ZAPRET2_ROOT
+  z2r_batch_queue "$ZAPRET2_ROOT/config.default" "config.default"
+  mkdir -p "$ZATOR_ROOT/firewall"
+  z2r_batch_queue "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh"
+  z2r_batch_queue "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh"
+  if [ "$hardware" = "keenetic" ]; then
+    z2r_batch_queue "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh"
   fi
-  # z2r_broken_hosts.txt — авто-исключения «ломается обходом» (break-validator)
-  # плюс ручные правки пользователя: существующий файл не перезаписываем.
-  if [ ! -f "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" ]; then
-    z2r_download_project_file "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" "lists/z2r_broken_hosts.txt" || touch "$ZATOR_ROOT/lists/z2r_broken_hosts.txt"
+
+  z2r_batch_commit
+
+  # опциональные файлы: пустые после батча и фолбэка не фатальны
+  for listfile in netrogat.txt z2r_broken_hosts.txt netrogat_substrings.txt; do
+    [ -s "$ZATOR_ROOT/lists/$listfile" ] || touch "$ZATOR_ROOT/lists/$listfile"
+  done
+  [ -s "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ] || { mkdir -p "$ZATOR_ROOT/extra_strats"; touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"; }
+  [ -s "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" ] || { mkdir -p "$ZATOR_ROOT/extra_strats"; touch "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt"; }
+  if [ -s "$ZATOR_ROOT/data/providers/asn.txt" ]; then
+    grep -qE '^[0-9]+:' "$ZATOR_ROOT/data/providers/asn.txt" 2>/dev/null || rm -f "$ZATOR_ROOT/data/providers/asn.txt"
   fi
-  z2r_download_project_file "$fake_archive" "fake_files.tar.gz" || return 1
+
+  # обязательные: circular runtime, fake-архив, проектные списки, extra_strats,
+  # конфиг и firewall-хелперы
+  z2r_batch_require \
+    "$CIRCULAR_DETECTOR_LUA" "$SILENT_DROP_DETECTOR_LUA" "$DNS_CLONE_LUA" \
+    "$STRATEGY_LOCK_MANAGER_LUA" "$STRATEGY_VALIDATOR_WORKER" \
+    "$BREAK_DETECTOR_LUA" "$BREAK_VALIDATOR_WORKER" \
+    "$fake_archive" \
+    "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" \
+    "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" \
+    "$ZAPRET2_ROOT/config.default" \
+    "$ZATOR_ROOT/firewall/client-scope-iptables.sh" \
+    "$ZATOR_ROOT/firewall/client-scope-nft.sh" \
+    || return 1
+  for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
+    z2r_batch_require "$ZATOR_ROOT/lists/$listfile" || return 1
+  done
+  if [ "$hardware" = "keenetic" ]; then
+    z2r_batch_require "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" || return 1
+    chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
+  fi
+
+  chmod +x "$STRATEGY_VALIDATOR_WORKER" "$BREAK_VALIDATOR_WORKER" 2>/dev/null || true
+  chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
+
   tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
     rm -f "$fake_archive"
     return 1
   }
   rm -f "$fake_archive"
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
-  # TCP_Custom.txt — пользовательский список: существующий файл не трогаем.
-  # Старое безусловное скачивание затирало домены пустым Custom.txt из репо
-  # при каждом обновлении, при этом локи в locked.tsv переживали.
-  if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ]; then
-    z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
-  fi
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "extra_strats/TCP/YT/List.txt" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" "extra_strats/TCP/RKN/Discord.txt" || return 1
+
+  strategy_validator_install_service || return 1
+  break_validator_install_service || true
   blockcheck2_prepare_z4r_test || return 1
-  if [ ! -f "$ZATOR_ROOT/files/fake/custom_tls.bin" ]; then
-    mkdir -p "$ZATOR_ROOT/files/fake"
-    if ! z2r_download_project_file "$ZATOR_ROOT/files/fake/custom_tls.bin" "fake/custom_tls.bin"; then
-      echo -e "${yellow}Не удалось скачать custom_tls.bin: нет curl/wget.${plain}"
-    fi
-  fi
+
   touch "$ZATOR_ROOT/lists/autohostlist.txt"
   if [ -d /opt/extra_strats ]; then
     rm -rf "$ZATOR_ROOT/extra_strats"
     mv /opt/extra_strats "$ZATOR_ROOT/"
     echo "Востановление настроек подбора из резерва выполнено."
   fi
-  if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ]; then
-    mkdir -p "$ZATOR_ROOT/extra_strats"
-    z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
-  fi
-  if [ ! -f "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" ]; then
-    mkdir -p "$ZATOR_ROOT/extra_strats"
-    z2r_download_project_file "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" "extra_strats/TCP/RKN/Domains_By_Substring.txt" || touch "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt"
-  fi
-  if [ ! -f "$ZATOR_ROOT/lists/netrogat_substrings.txt" ]; then
-    z2r_download_project_file "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt" || touch "$ZATOR_ROOT/lists/netrogat_substrings.txt"
-  fi
-  mkdir -p "$ZATOR_ROOT/data/providers"
-  if z2r_download_project_file "$ZATOR_ROOT/data/providers/asn.txt" "data/providers/asn.txt"; then
-    grep -qE '^[0-9]+:' "$ZATOR_ROOT/data/providers/asn.txt" 2>/dev/null || rm -f "$ZATOR_ROOT/data/providers/asn.txt"
-  fi
+  # после подмены каталога резервом пользовательские списки должны остаться
+  [ -s "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ] || touch "$ZATOR_ROOT/extra_strats/TCP_Custom.txt"
+  [ -s "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt" ] || touch "$ZATOR_ROOT/extra_strats/TCP_RKN_domains_by_substring.txt"
   if [ -f "/opt/netrogat.txt" ]; then
     mv -f /opt/netrogat.txt "$ZATOR_ROOT/lists/netrogat.txt"
     echo "Востановление листа исключений выполнено."
   fi
-  # config.default и keenetic-policy.sh — zapret2-native, остаются в $ZAPRET2_ROOT.
- z2r_download_project_file "$ZAPRET2_ROOT/config.default" "config.default" || return 1
   # Add new optional settings without breaking an older deployed template.
   config_client_scope_ensure "$ZAPRET2_ROOT/config.default" || return 1
-  mkdir -p "$ZATOR_ROOT/firewall"
-  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "firewall/client-scope-iptables.sh" || return 1
-  z2r_download_project_file "$ZATOR_ROOT/firewall/client-scope-nft.sh" "firewall/client-scope-nft.sh" || return 1
-  chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
-  if [ "$hardware" = "keenetic" ]; then
-    z2r_download_project_file "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh" "Entware/keenetic-policy.sh" || return 1
-    chmod +x "$ZAPRET2_ROOT/init.d/sysv/keenetic-policy.sh"
-  fi
   if fwtype_nft_available; then
     sed -i 's/^FWTYPE=iptables$/FWTYPE=nftables/' "$ZAPRET2_ROOT/config.default"
   fi
