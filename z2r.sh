@@ -190,6 +190,12 @@ z2r_batch_queue() {
   if [ "${Z2R_OFFLINE:-0}" = "1" ] && [ -f "$dest" ]; then
     return 0
   fi
+  # повторная установка (смена версии zapret2): zator-контент не зависит от
+  # версии запрета; существующие файлы не перекачиваем (обновление контента —
+  # отдельный путь, меню 5 -> 7)
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$dest" ]; then
+    return 0
+  fi
   Z2R_BATCH_DESTS+=("$dest")
   Z2R_BATCH_RELS+=("$rel")
 }
@@ -1219,7 +1225,13 @@ get_repo() {
   [ -f "$ZATOR_ROOT/lists/netrogat.txt" ] || z2r_batch_queue "$ZATOR_ROOT/lists/netrogat.txt" "lists/netrogat.txt"
   [ -f "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" ] || z2r_batch_queue "$ZATOR_ROOT/lists/z2r_broken_hosts.txt" "lists/z2r_broken_hosts.txt"
   [ -f "$ZATOR_ROOT/lists/netrogat_substrings.txt" ] || z2r_batch_queue "$ZATOR_ROOT/lists/netrogat_substrings.txt" "lists/netrogat_substrings.txt"
-  z2r_batch_queue "$fake_archive" "fake_files.tar.gz"
+  # fake-архив нужен только когда блобы ещё не распакованы (при повторной
+  # установке files/fake уже на месте и tar качать незачем)
+  local need_fake=1
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$ZATOR_ROOT/files/fake/stun.bin" ]; then
+    need_fake=0
+  fi
+  [ "$need_fake" = 1 ] && z2r_batch_queue "$fake_archive" "fake_files.tar.gz"
   z2r_batch_queue "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt"
   z2r_batch_queue "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt"
   [ -f "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" ] || z2r_batch_queue "$ZATOR_ROOT/extra_strats/TCP_Custom.txt" "extra_strats/TCP/RKN/Custom.txt"
@@ -1250,19 +1262,19 @@ get_repo() {
     grep -qE '^[0-9]+:' "$ZATOR_ROOT/data/providers/asn.txt" 2>/dev/null || rm -f "$ZATOR_ROOT/data/providers/asn.txt"
   fi
 
-  # обязательные: circular runtime, fake-архив, проектные списки, extra_strats,
-  # конфиг и firewall-хелперы
+  # обязательные: circular runtime, проектные списки, extra_strats,
+  # конфиг и firewall-хелперы (fake-архив — только если качали)
   z2r_batch_require \
     "$CIRCULAR_DETECTOR_LUA" "$SILENT_DROP_DETECTOR_LUA" "$DNS_CLONE_LUA" \
     "$STRATEGY_LOCK_MANAGER_LUA" "$STRATEGY_VALIDATOR_WORKER" \
     "$BREAK_DETECTOR_LUA" "$BREAK_VALIDATOR_WORKER" \
-    "$fake_archive" \
     "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" \
     "$ZATOR_ROOT/extra_strats/TCP_YT_list.txt" "$ZATOR_ROOT/extra_strats/TCP_Discord.txt" \
     "$ZAPRET2_ROOT/config.default" \
     "$ZATOR_ROOT/firewall/client-scope-iptables.sh" \
     "$ZATOR_ROOT/firewall/client-scope-nft.sh" \
     || return 1
+  [ "$need_fake" = 1 ] && z2r_batch_require "$fake_archive"
   for listfile in cloudflare-ipset.txt cloudflare-ipset_v6.txt russia-discord.txt russia-youtube-rtmps.txt russia-youtube.txt russia-youtubeQ.txt tg_cidr.txt; do
     z2r_batch_require "$ZATOR_ROOT/lists/$listfile" || return 1
   done
@@ -1274,14 +1286,26 @@ get_repo() {
   chmod +x "$STRATEGY_VALIDATOR_WORKER" "$BREAK_VALIDATOR_WORKER" 2>/dev/null || true
   chmod +x "$ZATOR_ROOT/firewall/client-scope-iptables.sh" "$ZATOR_ROOT/firewall/client-scope-nft.sh"
 
-  tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
+  if [ "$need_fake" = 1 ]; then
+    tar -xzf "$fake_archive" -C "$ZATOR_ROOT/files/fake" || {
+      rm -f "$fake_archive"
+      return 1
+    }
     rm -f "$fake_archive"
-    return 1
-  }
-  rm -f "$fake_archive"
+  fi
 
-  strategy_validator_install_service || return 1
-  break_validator_install_service || true
+  # init-скрипты валидаторов не зависят от версии zapret2: при повторной
+  # установке не трогаем уже установленные (и не качаем их заново)
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ]; then
+    :
+  else
+    strategy_validator_install_service || return 1
+  fi
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -x "$BREAK_VALIDATOR_ENTWARE_INIT" ]; then
+    :
+  else
+    break_validator_install_service || true
+  fi
   blockcheck2_prepare_z4r_test || return 1
 
   touch "$ZATOR_ROOT/lists/autohostlist.txt"
@@ -2857,6 +2881,14 @@ while true; do
  zapret_get
  
  # Создаём папки и забираем файлы папок lists, fake, extra_strats, копируем конфиг, скрипты для войсов DS, WA, TG
+  # Повторная установка (смена версии zapret2): zator-контент уже развёрнут и
+  # от версии запрета не зависит — существующие файлы не перекачиваем.
+  # Обновление контента — отдельный путь: меню 5 -> 7.
+  if [ -d "$ZATOR_ROOT/lua" ] && [ -d "$ZATOR_ROOT/extra_strats" ]; then
+    Z2R_GET_REPO_SKIP_EXISTING=1
+  else
+    Z2R_GET_REPO_SKIP_EXISTING=0
+  fi
   get_repo
   client_scope_config_restore
   if [ ! -s "$ORCH_LUA_LOCKED" ]; then
