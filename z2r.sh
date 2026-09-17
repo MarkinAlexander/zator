@@ -383,8 +383,11 @@ z2r_migrate_to_zator() {
 
 z2r_migrate_to_zator
 
-# Проверяем наличие всех нужных lib-файлов, иначе запускаем внешний скрипт
-missing_libs=0
+# Проверяем наличие всех нужных lib-файлов. Часть обновителей (внешний
+# лаунчер при недоступном GitHub API) кладет только запасной список файлов —
+# новые модули могут отсутствовать. Сначала пробуем докачать недостающее
+# (best-effort), и только при неудаче уходим во внешний установщик.
+missing_libs=""
 # Предпочитаем $ZATOR_ROOT/z2r_lib (новое расположение), fallback на
 # $ZAPRET2_ROOT/z2r_lib (legacy/сразу после первой установки внешним лаунчером).
 if [ -f "$ZATOR_ROOT/z2r_lib/orchestra_state.sh" ]; then
@@ -394,13 +397,23 @@ else
 fi
 for lib in $Z2R_LIB_FILES; do
   if [ ! -f "$LIB_DIR/$lib" ]; then
-    missing_libs=1
-    break
+    missing_libs="$missing_libs $lib"
   fi
 done
 
-if [ "$missing_libs" -ne 0 ]; then
-  echo "Не найдены нужные файлы в $LIB_DIR. Запускаю внешний z2r..."
+if [ -n "$missing_libs" ]; then
+  mkdir -p "$LIB_DIR" 2>/dev/null || true
+  for lib in $missing_libs; do
+    z2r_download_project_file "$LIB_DIR/$lib" "lib/$lib" || true
+  done
+  missing_libs=""
+  for lib in $Z2R_LIB_FILES; do
+    [ -f "$LIB_DIR/$lib" ] || missing_libs="$missing_libs $lib"
+  done
+fi
+
+if [ -n "$missing_libs" ]; then
+  echo "Не найдены нужные файлы в $LIB_DIR:${missing_libs}. Запускаю внешний z2r..."
   z2r_exec_external_installer "$@"
 fi
 
@@ -440,6 +453,10 @@ source "$LIB_DIR/premium.sh"
 # Логика стратегий: статус, lock-файлы, быстрый подбор
 # Функции: get_current_strategies_info, orch_profile_try, Strats_Tryer
 source "$LIB_DIR/strategies.sh"
+
+# Дифференциальная диагностика «кто сломал домен» (ручной вход п.12/п.9)
+# и список авто-исключённых. Функции: dpidetect_run, dpidetect_menu
+source "$LIB_DIR/dpidetect.sh"
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
