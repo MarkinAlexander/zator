@@ -1583,6 +1583,14 @@ backup_smart_apply_flags() {
     else backup_smart_set_reasm "$new_cfg" 0; fi
   fi
 
+  # --- --nat-fix: глобальный флаг форка, без тумблера (строку добавляет
+  # пользователь рядом с --reasm-disable). Пересборка конфига из эталона
+  # (п.5 -> п.7, восстановление бэкапа) не должна молча сносить флаг.
+  if grep -q '^[[:space:]]*--nat-fix[[:space:]]*$' "$old_cfg" 2>/dev/null && \
+     ! grep -q '^[[:space:]]*--nat-fix[[:space:]]*$' "$new_cfg" 2>/dev/null; then
+    sed -i '/^NFQWS2_OPT="/a --nat-fix' "$new_cfg"
+  fi
+
   # --- Пункт 19: игровой UDP ---
   s_old="$(config_mode_text udp_games "$old_cfg")"
   s_new="$(config_mode_text udp_games "$new_cfg")"

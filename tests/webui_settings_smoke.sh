@@ -197,6 +197,29 @@ backup_smart_set_reasm "$CFG" 1
 backup_smart_set_reasm "$CFG" 0
 [ "$(config_mode_text reasm_disable "$CFG")" = "выключено" ] || fail "reasm set 0 не удалил параметр"
 
+# == 3a. --nat-fix: глобальный флаг форка «рядом с --reasm-disable» ==
+# Парсеры обязаны считать его служебной строкой (не началом нового профиля
+# — иначе сдвигается вся нумерация), тумблеры reasm не должны его удалять,
+# а пересборка конфига (backup_smart_apply_flags) — переносить в новый.
+menu_config_snapshot "$CFG"
+max1_before="$MENU_PROFILE_MAX_1" max4_before="$MENU_PROFILE_MAX_4"
+sed -i '/^NFQWS2_OPT="/a --nat-fix' "$CFG"
+menu_config_snapshot "$CFG"
+[ "$MENU_PROFILE_MAX_1" = "$max1_before" ] || fail "--nat-fix сдвинул профиль 1 (menu_config_snapshot: $max1_before -> $MENU_PROFILE_MAX_1)"
+[ "$MENU_PROFILE_MAX_4" = "$max4_before" ] || fail "--nat-fix сдвинул профиль 4 (menu_config_snapshot: $max4_before -> $MENU_PROFILE_MAX_4)"
+[ "$(config_profile_max_strategy 1 "$CFG")" = "$max1_before" ] \
+  || fail "--nat-fix сдвинул профиль 1 (config_profile_max_strategy)"
+backup_smart_set_reasm "$CFG" 1
+grep -q '^--nat-fix$' "$CFG" || fail "reasm set 1 удалил --nat-fix"
+backup_smart_set_reasm "$CFG" 0
+grep -q '^--nat-fix$' "$CFG" || fail "reasm set 0 удалил --nat-fix"
+NATFIX_NEW="$TMP_DIR/natfix-new.cfg"
+tr -d '\r' < "$REPO_DIR/config.default" > "$NATFIX_NEW"
+backup_smart_apply_flags "$CFG" "$NATFIX_NEW"
+grep -q '^--nat-fix$' "$NATFIX_NEW" || fail "backup_smart_apply_flags не перенёс --nat-fix в новый конфиг"
+# строка остаётся в $CFG до конца теста: остальные секции гоняются с ней,
+# проверяя инертность флага для остальных парсеров
+
 # == 4. QUIC443 ==
 
 backup_smart_set_quic443 "$CFG" 0

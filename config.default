@@ -88,6 +88,7 @@ NFQWS2_UDP_PKT_IN=3
 # hostlist markers are replaced to empty string if MODE_FILTER does not satisfy
 # <HOSTLIST_NOAUTO> appends ipset/zapret-hosts-auto.txt as normal list
 NFQWS2_OPT="
+# Глобальные флаги отдельными строками в этом блоке: --reasm-disable (меню п.19), --nat-fix (форк zapret2; парсеры z2r пропускают)
 
 --lua-init=@/opt/zator/lua/client-scope-config.lua
 --lua-init=@/opt/zator/lua/locked.lua

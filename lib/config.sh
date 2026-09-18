@@ -792,7 +792,8 @@ menu_config_snapshot() {
           tpl = ""
         } else if (!in_template) {
           if (!pos_active && $0 ~ /^--/ && $0 !~ /^--new/ &&
-              $0 !~ /^--lua-init/ && $0 !~ /^--blob=/ && $0 !~ /^--reasm-disable/) {
+              $0 !~ /^--lua-init/ && $0 !~ /^--blob=/ && $0 !~ /^--reasm-disable/ &&
+              $0 !~ /^--nat-fix/) {
             prof++
             pos_active = 1
           }
@@ -1074,7 +1075,8 @@ config_profile_max_strategy() {
               $0 !~ /^--new/ &&
               $0 !~ /^--lua-init/ &&
               $0 !~ /^--blob=/ &&
-              $0 !~ /^--reasm-disable/) {
+              $0 !~ /^--reasm-disable/ &&
+              $0 !~ /^--nat-fix/) {
               prof++
               active=1
           }
