@@ -5,12 +5,12 @@
 #   path|dest|class|sha256|size|exec, class = auto|keep-if-exists|payload.
 #
 # Модуль самодостаточен: z2r.sh source-ит его для меню, лаунчер z2r вызывает
-# standalone: /opt/zator/z2r_lib/deploy.sh from-tar <файл|url> [variant] [tag].
-# Файл обязан парситься и работать под busybox sh: при недоступном bash
-# (наблюдалось на Merlin после сбоя монтирования Entware) лаунчер выполняет
-# его под ash, где bash-измы дают «syntax error: bad substitution». Запрещены
-# ${var^^}/${var,,}, ${!var}, ${BASH_SOURCE}, RETURN-ловушки, массивы;
-# охраняется tests/deploy_tar_smoke.sh.
+# standalone: bash /opt/zator/z2r_lib/deploy.sh from-tar <файл|url> [variant] [tag]
+#
+# Требование к лаунчеру: вызов только через bash. При недоступном bash
+# (наблюдалось на Merlin со слетевшим монтированием Entware) запуск под
+# busybox sh падает «syntax error: bad substitution» — лаунчер обязан
+# честно сообщать об отсутствии bash, а не откатываться на sh.
 
 ZATOR_ROOT="${ZATOR_ROOT:-/opt/zator}"
 ZAPRET2_ROOT="${ZAPRET2_ROOT:-/opt/zapret2}"
@@ -126,17 +126,6 @@ deploy_asset_field() {
   printf '%s\n' "$section" | sed -n "s/^.*\"${key}\": *\([0-9][0-9]*\).*$/\1/p" | head -n1
 }
 
-# Верхний регистр имени варианта ассета: ${var^^} — bash-изм и под busybox sh
-# падает bad substitution, поэтому явная таблица трёх известных вариантов.
-deploy_asset_upper() {
-  case "$1" in
-    core) printf 'CORE' ;;
-    webui) printf 'WEBUI' ;;
-    full) printf 'FULL' ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
 # Забирает latest.json релиза <tag> и заполняет DEPLOY_META_* по сборке и
 # DEPLOY_META_ASSET_<VARIANT>_{SIZE,SHA,UNPACKED} по ассетам.
 deploy_fetch_release_meta() {
@@ -153,12 +142,11 @@ deploy_fetch_release_meta() {
   DEPLOY_META_WEBUI_SHA="$(deploy_json_str "$tmp" webuiSha)"
   DEPLOY_META_ZATOR_DATE="$(deploy_json_str "$tmp" zatorDate)"
   DEPLOY_META_WEBUI_DATE="$(deploy_json_str "$tmp" webuiDate)"
-  local v u
+  local v
   for v in core webui full; do
-    u="$(deploy_asset_upper "$v")"
-    eval "DEPLOY_META_ASSET_${u}_SIZE=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" size)\""
-    eval "DEPLOY_META_ASSET_${u}_SHA=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" sha256)\""
-    eval "DEPLOY_META_ASSET_${u}_UNPACKED=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" unpackedSize)\""
+    eval "DEPLOY_META_ASSET_${v^^}_SIZE=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" size)\""
+    eval "DEPLOY_META_ASSET_${v^^}_SHA=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" sha256)\""
+    eval "DEPLOY_META_ASSET_${v^^}_UNPACKED=\"\$(deploy_asset_field \"\$tmp\" \"\$v\" unpackedSize)\""
   done
   rm -f "$tmp"
   [ -n "$DEPLOY_META_RELEASE" ]
@@ -295,8 +283,7 @@ deploy_download_archive() {
     echo -e "${red}Не удалось скачать архив zator-${variant}.tar.gz (релиз $tag).${plain}"
     return 1
   fi
-  local meta_key="DEPLOY_META_ASSET_$(deploy_asset_upper "$variant")_SHA"
-  eval "expected=\"\${${meta_key}:-}\""
+  eval "expected=\"\${DEPLOY_META_ASSET_${variant^^}_SHA:-}\""
   if [ -n "$expected" ] && command -v sha256sum >/dev/null 2>&1; then
     if [ "$(file_sha256 "$dest")" != "$expected" ]; then
       echo -e "${red}Контрольная сумма архива не совпала.${plain}"
@@ -670,49 +657,44 @@ deploy_apply_installed_config() {
 }
 
 deploy_from_tar() {
-  # Тело в subshell с EXIT-ловушкой: RETURN-ловушка — bash-изм, а лаунчер
-  # может выполнять файл под busybox sh (см. шапку). exit покидает только
-  # subshell, статус функции сохраняется.
-  (
-  source="$1" variant="${2:-}" tag="${3:-latest}" tracking="${3:-}"
-  tmpbase="/tmp/z2r_deploy_$$"
-  staging="$tmpbase/stage" newdir="$ZATOR_ROOT.deploy.new.$$"
-  archive="" archive_kb="" unpacked_kb="" unpacked_bytes="" fresh=0 url="" meta_key=""
-  trap 'rm -rf "$tmpbase" "$newdir"' EXIT
+  local source="$1" variant="${2:-}" tag="${3:-latest}" tracking="${3:-}"
+  local tmpbase="/tmp/z2r_deploy_$$"
+  local staging="$tmpbase/stage" newdir="$ZATOR_ROOT.deploy.new.$$"
+  local archive="" archive_kb unpacked_kb unpacked_bytes="" fresh=0 url=""
+  trap 'rm -rf "$tmpbase" "$newdir"' RETURN
 
   case "$source" in
     http://*|https://*)
       url="$source"
       if [ -z "$variant" ]; then
         echo -e "${red}Для URL нужно указать вариант (core|webui|full).${plain}"
-        exit 1
+        return 1
       fi
       if ! deploy_fetch_release_meta "$tag"; then
         echo -e "${red}Не удалось получить метаданные релиза $tag.${plain}"
-        exit 1
+        return 1
       fi
       mkdir -p "$tmpbase"
       archive="$tmpbase/zator-$variant.tar.gz"
-      deploy_download_archive "$archive" "$tag" "$variant" "$url" || exit 1
+      deploy_download_archive "$archive" "$tag" "$variant" "$url" || return 1
       ;;
     *)
       archive="$source"
       if [ ! -f "$archive" ]; then
         echo -e "${red}Файл не найден: $archive${plain}"
-        exit 1
+        return 1
       fi
       ;;
   esac
 
-  deploy_gzip_ok "$archive" || exit 1
+  deploy_gzip_ok "$archive" || return 1
   if ! deploy_tar_paths_ok "$archive"; then
     echo -e "${red}Архив содержит небезопасные пути (выход за каталог распаковки).${plain}"
-    exit 1
+    return 1
   fi
 
   if [ -n "$url" ]; then
-    meta_key="DEPLOY_META_ASSET_$(deploy_asset_upper "$variant")_UNPACKED"
-    eval "unpacked_bytes=\"\${${meta_key}:-}\""
+    eval "unpacked_bytes=\"\${DEPLOY_META_ASSET_${variant^^}_UNPACKED:-}\""
   fi
   if [ -z "$unpacked_bytes" ]; then
     unpacked_bytes="$(gzip -l "$archive" 2>/dev/null | awk 'NR==2 {print $2}')"
@@ -721,17 +703,17 @@ deploy_from_tar() {
   unpacked_kb="$(( ${unpacked_bytes:-0} / 1024 + 1 ))"
 
   [ -d "$ZATOR_ROOT/z2r_lib" ] || fresh=1
-  deploy_space_mode_select "$archive_kb" "$unpacked_kb" || exit 1
+  deploy_space_mode_select "$archive_kb" "$unpacked_kb" || return 1
 
   if [ "$DEPLOY_MODE" = "C" ]; then
     if [ -n "$url" ]; then
-      deploy_stream_unpack "$url" "$newdir" || { rm -rf "$newdir"; exit 1; }
+      deploy_stream_unpack "$url" "$newdir" || { rm -rf "$newdir"; return 1; }
     else
-      deploy_unpack "$archive" "$newdir" || { rm -rf "$newdir"; exit 1; }
+      deploy_unpack "$archive" "$newdir" || { rm -rf "$newdir"; return 1; }
     fi
-    deploy_verify_staging "$newdir" || { rm -rf "$newdir"; exit 1; }
-    deploy_apply_newdir "$newdir" "$tracking" "$fresh" || { rm -rf "$newdir"; exit 1; }
-    exit 0
+    deploy_verify_staging "$newdir" || { rm -rf "$newdir"; return 1; }
+    deploy_apply_newdir "$newdir" "$tracking" "$fresh" || { rm -rf "$newdir"; return 1; }
+    return 0
   fi
 
   if [ "$DEPLOY_MODE" = "B" ]; then
@@ -741,20 +723,19 @@ deploy_from_tar() {
   if ! deploy_unpack "$archive" "$staging"; then
     echo -e "${red}Не удалось распаковать архив.${plain}"
     rm -rf "$staging"
-    exit 1
+    return 1
   fi
   if ! deploy_verify_staging "$staging"; then
     rm -rf "$staging"
-    exit 1
+    return 1
   fi
   if [ "$DEPLOY_MODE" = "C" ]; then
-    deploy_apply_newdir "$staging" "$tracking" "$fresh" || { rm -rf "$staging"; exit 1; }
+    deploy_apply_newdir "$staging" "$tracking" "$fresh" || { rm -rf "$staging"; return 1; }
   else
-    deploy_apply_staging "$staging" "$tracking" || { rm -rf "$staging"; exit 1; }
+    deploy_apply_staging "$staging" "$tracking" || { rm -rf "$staging"; return 1; }
   fi
   rm -rf "$staging"
-  exit 0
-  )
+  return 0
 }
 
 deploy_integrity_check() {
@@ -919,54 +900,53 @@ EOF
 # Выборочный сброс пользовательских файлов к эталону текущей версии
 # (архив релиза, на котором стоит установка; TRACKING из version.env).
 deploy_reset_user_files() {
-  # subshell + EXIT-ловушка: RETURN-ловушка — bash-изм (см. deploy_from_tar)
-  (
-  source="${1:-}"
-  tmpbase="/tmp/z2r_deploy_reset_$$"
-  staging="$tmpbase/stage"
-  trap 'rm -rf "$tmpbase"' EXIT
+  local source="${1:-}"
+  local tmpbase="/tmp/z2r_deploy_reset_$$"
+  local staging="$tmpbase/stage"
+  trap 'rm -rf "$tmpbase"' RETURN
   if ! command -v sha256sum >/dev/null 2>&1; then
     echo -e "${yellow}sha256sum недоступен — сравнение невозможно.${plain}"
-    exit 1
+    return 1
   fi
   mkdir -p "$tmpbase"
 
   if [ -z "$source" ]; then
+    local tag variant
     tag="$(deploy_version_field TRACKING)"
     [ -n "$tag" ] || tag="latest"
     variant="$(deploy_pick_variant)"
     if ! deploy_fetch_release_meta "$tag"; then
       echo -e "${red}Не удалось получить метаданные релиза $tag.${plain}"
-      exit 1
+      return 1
     fi
     source="$tmpbase/zator-$variant.tar.gz"
-    deploy_download_archive "$source" "$tag" "$variant" || exit 1
+    deploy_download_archive "$source" "$tag" "$variant" || return 1
   fi
-  deploy_gzip_ok "$source" || exit 1
+  deploy_gzip_ok "$source" || return 1
   if ! deploy_tar_paths_ok "$source"; then
     echo -e "${red}Архив содержит небезопасные пути.${plain}"
-    exit 1
+    return 1
   fi
   if ! deploy_unpack "$source" "$staging"; then
     echo -e "${red}Не удалось распаковать архив.${plain}"
-    exit 1
+    return 1
   fi
 
-  m="$staging/$DEPLOY_MANIFEST_REL"
-  path="" dest="" cls="" sha="" size="" exec="" idx=0 n="" answer="" pick="" reset_count=0 i=""
+  local m="$staging/$DEPLOY_MANIFEST_REL"
+  local path dest cls sha size exec idx=0 n answer pick reset_count=0 i
   while IFS='|' read -r path dest cls sha size exec; do
     case "$path" in ''|'#'*) continue ;; esac
     [ "$cls" = "keep-if-exists" ] || continue
     case "$path" in /*|../*|*/../*|*/..)
       echo -e "${red}Недопустимый путь в манифесте: $path${plain}"
-      exit 1
+      return 1
       ;;
     esac
     case "$dest" in
       /opt/zator/*|/opt/z2r.sh) ;;
       *)
         echo -e "${red}Недопустимый dest в манифесте: $dest${plain}"
-        exit 1
+        return 1
         ;;
     esac
     dest="$(deploy_dest_for "$dest")"
@@ -980,11 +960,11 @@ deploy_reset_user_files() {
 
   if [ "$idx" -eq 0 ]; then
     echo -e "${green}Пользовательские файлы не отличаются от эталона.${plain}"
-    exit 0
+    return 0
   fi
   echo -e "${yellow}Введите номера через пробел (например: 1 3), all — все, 0 — отмена:${plain}"
   read -re -p "" answer
-  [ "$answer" = "0" ] && { echo "Отменено."; exit 0; }
+  [ "$answer" = "0" ] && { echo "Отменено."; return 0; }
   pick=""
   for n in $answer; do
     if [ "$n" = "all" ]; then pick="all"; break; fi
@@ -992,7 +972,7 @@ deploy_reset_user_files() {
       pick="$pick $n"
     fi
   done
-  [ -n "$pick" ] || { echo -e "${yellow}Ничего не выбрано.${plain}"; exit 0; }
+  [ -n "$pick" ] || { echo -e "${yellow}Ничего не выбрано.${plain}"; return 0; }
 
   if [ "$pick" = "all" ]; then
     i=1
@@ -1012,8 +992,6 @@ deploy_reset_user_files() {
   else
     echo -e "${yellow}Перезапустите zapret2, чтобы листы перечитались.${plain}"
   fi
-  exit 0
-  )
 }
 
 # Переменные для шапки главного меню: даты zator/webui и уведомление об обновлении.
@@ -1333,22 +1311,18 @@ deploy_transition_menu() {
   done
 }
 
-# ${BASH_SOURCE[0]} — bash-изм: под busybox sh его нет. Standalone-детект по
-# $0: z2r.sh и тесты source-ят файл под своими именами, лаунчер исполняет файл.
-case "$0" in
-  */deploy.sh|deploy.sh)
-    case "${1:-}" in
-      from-tar)
-        shift
-        deploy_from_tar "$@"
-        ;;
-      check)
-        deploy_check_latest
-        ;;
-      *)
-        echo "использование: deploy.sh from-tar <файл|url> [variant] [tag] | check" >&2
-        exit 2
-        ;;
-    esac
-    ;;
-esac
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    from-tar)
+      shift
+      deploy_from_tar "$@"
+      ;;
+    check)
+      deploy_check_latest
+      ;;
+    *)
+      echo "использование: deploy.sh from-tar <файл|url> [variant] [tag] | check" >&2
+      exit 2
+      ;;
+  esac
+fi
