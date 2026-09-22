@@ -151,6 +151,23 @@ exp_webui_sha="$(grep '"webuiSha":' "$SMOKE_JSON_SRC" | head -n1 | sed 's/.*: *"
 [ "$DEPLOY_META_ASSET_WEBUI_SHA" != "$exp_webui_sha" ] || fail "тест не различает контентный и ассетный sha"
 ok "deploy_fetch_release_meta: контентный и ассетный sha разделены"
 
+# --- check_latest: version.env без ZATOR_SHA не должен вечно молчать ---
+# Кейс: webui-only деплой поверх установки без релизной истории оставляет
+# ZATOR_VERSION=unknown/ZATOR_SHA пустым; сравнивать нечего, гейт говорил
+# «актуально», п.2 завершался без установки — цикл. Теперь такое ядро
+# помечается к обновлению (единственный проход восстанавливает version.env).
+mkdir -p "$DEPLOY_CACHE_DIR" "$ZATOR_ROOT/z2r_lib"
+printf 'ZATOR_VERSION="unknown"\nWEBUI_VERSION="1.1"\nTRACKING="latest"\n' > "$DEPLOY_VERSION_FILE"
+z2r_fetch_url_to_file() { cp "$SMOKE_JSON_SRC" "$1"; }
+deploy_check_latest >/dev/null 2>&1
+[ "$DEPLOY_UPDATE_ZATOR" = 1 ] || fail "пустой ZATOR_SHA: п.2 не видит необходимость обновления (цикл «unknown»)"
+# совпадающий sha по-прежнему означает «обновлений нет» (гейт не перегрет)
+sha_ok="$(deploy_json_str "$SMOKE_JSON_SRC" zatorSha)"
+printf 'ZATOR_VERSION="stable-1"\nZATOR_SHA="%s"\nTRACKING="latest"\n' "$sha_ok" > "$DEPLOY_VERSION_FILE"
+deploy_check_latest >/dev/null 2>&1
+[ "$DEPLOY_UPDATE_ZATOR" = 0 ] || fail "совпадающий ZATOR_SHA даёт ложное предложение обновления"
+ok "check_latest: неизвестная версия ядра лечится через п.2, ложных срабатываний нет"
+
 # регрессия set -e: deploy_menu_header с отсутствующими version.env/latest.env
 # не должен ронять вызывающий скрипт; без установленной панели шапка не должна
 # упоминать Web-панель (поля WEBUI_* есть даже в core-сборке)

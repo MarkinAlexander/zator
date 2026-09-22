@@ -204,6 +204,14 @@ deploy_check_latest() {
   local zator_sha webui_sha
   zator_sha="$(deploy_version_field ZATOR_SHA)"
   webui_sha="$(deploy_version_field WEBUI_SHA)"
+  # version.env без ZATOR_SHA (webui-only деплой поверх установки без
+  # релизной истории): сравнивать нечего и гейт вечно молчит «актуально»,
+  # зацикливая п.2 без установки. Ядро стоит — предлагаем обновление,
+  # единственный проход которого восстанавливает version.env из релиза.
+  if [ -z "$zator_sha" ] && [ -d "$ZATOR_ROOT/z2r_lib" ]; then
+    DEPLOY_UPDATE_ZATOR=1
+    echo -e "${yellow}Версия ядра неизвестна — обновление восстановит её из релиза.${plain}"
+  fi
   [ -n "$zator_sha" ] && [ "$zator_sha" != "$DEPLOY_META_ZATOR_SHA" ] && DEPLOY_UPDATE_ZATOR=1
   # без установленной панели обновлять нечего: WEBUI_SHA в version.env
   # присутствует даже на core-установках (общая сборка)
