@@ -1524,21 +1524,6 @@ version_select() {
 done
 }
 
-z2r_pick_tar() {
- local t
- t="$(command -v tar 2>/dev/null || true)"
- if [ -n "$t" ] && "$t" --version >/dev/null 2>&1; then
-  printf '%s' "$t"
-  return 0
- fi
- if [ -x /opt/libexec/tar-gnu ]; then
-  printf '/opt/libexec/tar-gnu'
-  return 0
- fi
- printf 'tar'
- return 0
-}
-
 z2r_validate_tar_archive() {
  local archive="$1"
  local entry tar

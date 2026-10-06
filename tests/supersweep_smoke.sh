@@ -117,6 +117,10 @@ printf 'tel_enabled=1\ntel_uuid=deadbeef\n' > "$TELEMETRY_CFG"
 export Z2R_SWEEP_PAUSE=0
 # зелёный ускоритель в тестах выключен: паузы остаются нулевыми
 export Z2R_SUPERSWEEP_GREEN_PAUSE=0
+# межфазные паузы (30 сек по умолчанию, 3 промежутка на прогон) тоже в ноль
+export Z2R_SUPERSWEEP_PHASE_PAUSE=0
+# опрос cmd/applied-файлов: на Windows-машине каждая итерация дорога, в тестах ускоряем
+export Z2R_SUPERSWEEP_POLL=0.05
 export Z2R_SUPERSWEEP_ARCHIVE_KEEP=3
 mkdir -p "$ORCH" "$ROOT" "$ZATOR_ROOT/extra_strats"
 : > "$ORCH_LOCK_FILE"

@@ -93,12 +93,12 @@ _supersweep_request_lock() {
     local name="$1" round="$2" specs="$3" dir="$Z2R_SUPERSWEEP_DIR"
     printf 'r|%s\n%s\n' "$round" "$specs" > "${dir}/cmd.${name}.tmp.$$" \
         && mv -f "${dir}/cmd.${name}.tmp.$$" "${dir}/cmd.${name}" || return 1
-    local t0=$SECONDS
+    local t0=$SECONDS poll="${Z2R_SUPERSWEEP_POLL:-0.3}"
     while [ $((SECONDS - t0)) -lt 15 ]; do
         [ -f "${dir}/applied.${name}" ] \
             && [ "$(sed -n 1p "${dir}/applied.${name}" 2>/dev/null)" = "r|${round}" ] \
             && return 0
-        sleep 0.3 2>/dev/null || sleep 1
+        sleep "${Z2R_SUPERSWEEP_POLL:-0.3}" 2>/dev/null || sleep 1
     done
     echo "supersweep: lock apply timeout (worker $name, round $round)" >&2
     return 1
@@ -848,8 +848,16 @@ supersweep_run() {
             [ "$cancelled" != 1 ] && _supersweep_settle_pass "$cfg"
             local alive_names=""
             kill -0 "$pid" 2>/dev/null && alive_names="$phase"
-            _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_names" "$domains"
-            sleep 0.3 2>/dev/null || sleep 1
+            # status перезаписывается только при смене данных или раз в 5 сек:
+            # при частом опросе каждая запись это дюжина fork'ов, на слабых
+            # машинах именно она съедает время прогона
+            if [ "$alive_names" != "${last_alive:-}" ] || [ -z "${last_st:-}" ] \
+               || [ $((SECONDS - last_st)) -ge 5 ]; then
+                _supersweep_status_write running "$started" "$tls_pref" "$pause_sec" "$rkn_par" "$alive_names" "$domains"
+                last_alive="$alive_names"
+                last_st=$SECONDS
+            fi
+            sleep "${Z2R_SUPERSWEEP_POLL:-0.3}" 2>/dev/null || sleep 1
         done
         wait "$pid" 2>/dev/null || true
         # Обработать done последнего воркера, пропущенный из-за выхода из цикла.
