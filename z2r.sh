@@ -1524,18 +1524,34 @@ version_select() {
 done
 }
 
+z2r_pick_tar() {
+ local t
+ t="$(command -v tar 2>/dev/null || true)"
+ if [ -n "$t" ] && "$t" --version >/dev/null 2>&1; then
+  printf '%s' "$t"
+  return 0
+ fi
+ if [ -x /opt/libexec/tar-gnu ]; then
+  printf '/opt/libexec/tar-gnu'
+  return 0
+ fi
+ printf 'tar'
+ return 0
+}
+
 z2r_validate_tar_archive() {
  local archive="$1"
- local entry
+ local entry tar
 
- if ! tar -tzf "$archive" >/dev/null 2>&1; then
+ tar="$(z2r_pick_tar)"
+ if ! "$tar" -tzf "$archive" >/dev/null 2>&1; then
   return 1
  fi
  while IFS= read -r entry; do
   case "$entry" in
    /*|../*|*/../*|*/..) return 1 ;;
   esac
- done < <(tar -tzf "$archive")
+ done < <("$tar" -tzf "$archive")
  return 0
 }
 
@@ -1559,11 +1575,11 @@ z2r_archive_download_diagnose() {
  fi
  rm -f "$tmp_hdr"
 
- if tar -tzf "$archive" >/dev/null 2>&1; then
-  bad_entry="$(tar -tzf "$archive" 2>/dev/null | grep -m 3 -E '^/|(^|/)\.\.(/|$)' || true)"
+ if "$(z2r_pick_tar)" -tzf "$archive" >/dev/null 2>&1; then
+  bad_entry="$("$(z2r_pick_tar)" -tzf "$archive" 2>/dev/null | grep -m 3 -E '^/|(^|/)\.\.(/|$)' || true)"
   [ -n "$bad_entry" ] && echo -e "${yellow}Небезопасные пути внутри архива: ${bad_entry}${plain}"
  else
-  tar_err="$(tar -tzf "$archive" 2>&1 >/dev/null | head -n 3 || true)"
+  tar_err="$("$(z2r_pick_tar)" -tzf "$archive" 2>&1 >/dev/null | head -n 3 || true)"
   [ -n "$tar_err" ] && echo -e "${yellow}Ошибка tar: ${tar_err}${plain}"
  fi
 
@@ -1577,6 +1593,7 @@ zapret_get() {
  local archive
  local extract_dir
  local workdir
+ local zipmode=0
  if [[ "$OSystem" == "WRT" ]]; then
      tarfile="zapret2-v$VER-openwrt-embedded.tar.gz"
  else
@@ -1606,16 +1623,29 @@ zapret_get() {
         && z2r_download_zapret2_release "$archive" "$VER" "$tarfile" \
         && z2r_validate_tar_archive "$archive"; then
          echo -e "${green}Повторная загрузка прошла проверку — продолжаю.${plain}"
+     elif command -v unzip >/dev/null 2>&1 \
+        && z2r_download_zapret2_release "$archive" "$VER" "${tarfile%.tar.gz}.zip" \
+        && unzip -t "$archive" >/dev/null 2>&1; then
+         zipmode=1
+         echo -e "${green}Взял zip-версию релиза: tar этого роутера не читает длинные имена GNU-архива.${plain}"
      else
          rm -f "$archive"
          echo -e "${yellow}Чаще всего это битая доставка с github.com (канал/перехват): повторите позже или скачайте через VPN.${plain}"
+         echo -e "${yellow}Если не поможет: opkg update && opkg install tar — и повторите установку.${plain}"
          return 1
      fi
  fi
  workdir="/tmp/z2r_zapret2_$$"
  rm -rf "$workdir"
  mkdir -p "$workdir"
- if ! tar -xzf "$archive" -C "$workdir"; then
+ if [ "$zipmode" = 1 ]; then
+     if ! unzip -q "$archive" -d "$workdir"; then
+         echo -e "${red}Архив zapret2 не распаковывается: ${tarfile%.tar.gz}.zip.${plain}"
+         rm -f "$archive"
+         rm -rf "$workdir"
+         return 1
+     fi
+ elif ! "$(z2r_pick_tar)" -xzf "$archive" -C "$workdir"; then
      echo -e "${red}Архив zapret2 повреждён или не является tar.gz: $tarfile.${plain}"
      rm -f "$archive"
      rm -rf "$workdir"
