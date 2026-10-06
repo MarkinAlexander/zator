@@ -50,7 +50,14 @@ case "$mode" in
   quick)
     for f in $QUICK_FILES; do
       [ -f "$f" ] || continue
-      bash -n "$f" || { echo "FAIL bash-n $f 0s"; exit 1; }
+      case "$f" in
+        *.lua)
+          if command -v luac >/dev/null 2>&1; then
+            luac -p "$f" || { echo "FAIL luac $f 0s"; exit 1; }
+          fi
+          ;;
+        *) bash -n "$f" || { echo "FAIL bash-n $f 0s"; exit 1; } ;;
+      esac
     done
     selection=""
     for t in $QUICK_STATIC; do
