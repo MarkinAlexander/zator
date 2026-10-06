@@ -7,6 +7,9 @@
 # Покрывает:
 #   1. bash -n lib/deploy.sh; статический wiring: z2r.sh source-ит deploy.sh,
 #      п.5 ведёт в deploy_update_menu с деградацией, Enter-подсказка обновлена.
+#      Плюс busybox-sh совместимость deploy.sh: при недоступном bash (Merlin,
+#      слетевшее монтирование Entware) лаунчер выполняет его под ash, где
+#      bash-измы дают «syntax error: bad substitution» (кейс r1616: line 142).
 #   2. Сборщик (node): три варианта одним прогоном, latest.json со схемой и
 #      размерами, version.env/manifest.tsv внутри архива, sha256sum -c.
 #   3. deploy_from_tar из локального full-архива (режим A): файлы установлены,
@@ -75,6 +78,34 @@ grep -q 'Enter (без цифр)' "$REPO_DIR/z2r.sh" && fail "Enter-подска
 grep -q 'DEPLOY_WANT_REINSTALL' "$REPO_DIR/z2r.sh" || fail "п.5 не запускает переустановку zapret2"
 grep -q 'DEPLOY_PAYLOAD_DIR' "$REPO_DIR/z2r.sh" || fail "z2r_download_project_file без payload-источника"
 ok "статика z2r.sh"
+
+# --- 1b. busybox-sh совместимость deploy.sh ---
+# Лаунчер при недоступном bash выполняет deploy.sh под ash (наблюдалось на
+# Merlin RT-BE92U: «deploy.sh: line 142: syntax error: bad substitution»).
+# Запрещённые bash-измы: ${var^^}/${var,,}/${var~}/${var@}/массивы, ${!var},
+# BASH_SOURCE, RETURN-ловушки, declare/mapfile/read -a, &>. Грепаем код без
+# полнолинейных комментариев (в шапке файл объясняет эти же запреты словами).
+BUSYISM_RE='\$\{[A-Za-z_][A-Za-z0-9_]*[\^,~@]|\$\{![A-Za-z_]|BASH_SOURCE|trap[[:space:]].*RETURN|\$\{[A-Za-z_][A-Za-z0-9_]*\[|=[[:space:]]*\(|local -[aA]|\bdeclare[[:space:]]|\bmapfile\b|read[[:space:]]+-[aA][[:space:]]|&>>?'
+printf 'eval "X_${v^^}_Y=1"\ntrap "rm" RETURN\narr=(1 2)\n' | grep -qE "$BUSYISM_RE" \
+  || fail "BUSYISM_RE ничего не ловит — сломан сам предохранитель"
+busyism_hits="$(grep -vE '^[[:space:]]*#' "$REPO_DIR/lib/deploy.sh" | grep -nE "$BUSYISM_RE")"
+if [ -n "$busyism_hits" ]; then
+  echo "$busyism_hits" >&2
+  fail "lib/deploy.sh содержит bash-измы — файл обязан работать под busybox sh"
+fi
+if command -v busybox >/dev/null 2>&1; then
+  # sh -n у busybox не выявляет bad substitution — исполняем файл с заведомо
+  # неверным аргументом: полный парс всего файла, затем usage (rc=2), без
+  # побочных эффектов (верхний уровень ничего не пишет на диск).
+  bb_out="$(busybox sh "$REPO_DIR/lib/deploy.sh" __busybox_parse__ 2>&1)"
+  bb_rc=$?
+  [ "$bb_rc" = 2 ] || fail "busybox sh deploy.sh упал с rc=$bb_rc: $bb_out"
+  case "$bb_out" in
+    *использование*) ;;
+    *) fail "busybox sh deploy.sh без usage (rc=$bb_rc): $bb_out" ;;
+  esac
+fi
+ok "busybox-sh совместимость deploy.sh (bash-измы запрещены)"
 
 # --- 2. сборка (пропускается при SMOKE_DIST) ---
 
@@ -475,7 +506,15 @@ TMP_FREE_KB=100 OPT_FREE_KB=100000 PATH="$WORK/bin:$PATH" deploy_space_mode_sele
 ok "выбор режима A/B/C по df"
 
 printf 'user-domain-2.example\n' > "$ZATOR_ROOT/lists/netrogat.txt"
-TMP_FREE_KB=100 OPT_FREE_KB=13000 PATH="$WORK/bin:$PATH" deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 \
+# OPT_FREE_KB не хардкодим: пороги need/B зависят от фактического размера
+# архива, захардкоженное значение хрупко к росту дерева. Даём ровно enough
+# для need (+300КБ запаса) — всегда меньше порога B (архив + need).
+c_unpacked_kb=$(( $(gzip -l "$DIST/zator-full.tar.gz" | awk 'NR==2 {print $2}') / 1024 + 1 ))
+c_archive_kb=$(( ($(wc -c < "$DIST/zator-full.tar.gz") + 1023) / 1024 ))
+c_free_kb=$(( c_unpacked_kb + DEPLOY_MARGIN_KB + DEPLOY_SLACK_KB + 300 ))
+[ "$c_free_kb" -lt "$(( c_archive_kb + c_unpacked_kb + DEPLOY_MARGIN_KB + DEPLOY_SLACK_KB ))" ] \
+  || fail "мок df: запас 300КБ не помещается между порогами C и B — уменьшите запас"
+TMP_FREE_KB=100 OPT_FREE_KB="$c_free_kb" PATH="$WORK/bin:$PATH" deploy_from_tar "$DIST/zator-full.tar.gz" >/dev/null 2>&1 \
   || fail "deploy_from_tar (C) упал"
 [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || fail "режим C: z2r_lib не на месте"
 [ ! -d "$ZATOR_ROOT.old.$$" ] || fail "старый каталог не убран"

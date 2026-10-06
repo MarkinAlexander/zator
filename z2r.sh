@@ -58,7 +58,7 @@ ZAPRET2_FORK_RELEASE_BASE="${ZAPRET2_FORK_RELEASE_BASE:-https://github.com/Marki
 ZAPRET2_RELEASE_MIRROR_BASE="${ZAPRET2_RELEASE_MIRROR_BASE:-}"
 ZAPRET2_YANDEX_0952="${ZAPRET2_YANDEX_0952:-https://disk.yandex.ru/d/M26CLc7XCEV_og}"
 ZAPRET2_YANDEX_0952_OPENWRT="${ZAPRET2_YANDEX_0952_OPENWRT:-https://disk.yandex.ru/d/ER1R2TNw8f7KYA}"
-Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh dpidetect.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+Z2R_LIB_FILES="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh dpidetect.sh supersweep.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Два корня установки:
 #   ZAPRET2_ROOT — zapret2-native (бинарники, init.d, install_*.sh, config, config.default),
@@ -338,7 +338,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua strategy-validator.sh break-detector.lua break-validator.sh; do
+  for f in locked.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua strategy-validator.sh break-detector.lua break-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -370,6 +370,7 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/combined-detector.lua#/opt/zator/lua/combined-detector.lua#g' \
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
       -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
+      -e 's#/opt/zapret2/lua/fake-adapt.lua#/opt/zator/lua/fake-adapt.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
       -e 's#/opt/zapret2/lua/break-detector.lua#/opt/zator/lua/break-detector.lua#g' \
       -e 's#/opt/zapret2/lua/break-validator.sh#/opt/zator/lua/break-validator.sh#g' \
@@ -454,9 +455,14 @@ source "$LIB_DIR/premium.sh"
 # Функции: get_current_strategies_info, orch_profile_try, Strats_Tryer
 source "$LIB_DIR/strategies.sh"
 
-# Дифференциальная диагностика «кто сломал домен» (ручной вход п.12/п.9)
+# Дифференциальная диагностика «кто сломал домен» (ручной вход п.13 подменю стратегий)
 # и список авто-исключённых. Функции: dpidetect_run, dpidetect_menu
 source "$LIB_DIR/dpidetect.sh"
+
+# Суперавтопрогон: параллельный подбор стратегий профилей 1/2/4 + карта
+# покрытий доменов РКН, прогресс в /tmp/z2r-supersweep (для CLI и Web-панели)
+# Функции: supersweep_run, supersweep_menu, supersweep_cancel_running
+source "$LIB_DIR/supersweep.sh"
 
 # Подменю (UI-обвязка стратегий + доп. меню управления: FLOWOFFLOAD, TCP443, провайдер)
 # Функции: strategies_submenu, flowoffload_submenu, fwtype_submenu, tcp443_submenu, provider_submenu, beginner_guide_menu
@@ -624,6 +630,7 @@ RST_GUARD_LUA="$ZATOR_ROOT/lua/rst-guard.lua"
 CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
 DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
+FAKE_ADAPT_LUA="$ZATOR_ROOT/lua/fake-adapt.lua"
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
 STRATEGY_VALIDATOR_OPENWRT_INIT="/etc/init.d/z2r-strategy-validator"
@@ -666,6 +673,7 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$CIRCULAR_DETECTOR_LUA" "lua/combined-detector.lua" || return 1
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
+  z2r_download_project_file "$FAKE_ADAPT_LUA" "lua/fake-adapt.lua" || return 1
   z2r_download_project_file "$STRATEGY_LOCK_MANAGER_LUA" "lua/strategy-lock-manager.lua" || return 1
   z2r_download_project_file "$STRATEGY_VALIDATOR_WORKER" "lua/strategy-validator.sh" || return 1
   chmod +x "$STRATEGY_VALIDATOR_WORKER"
@@ -1127,6 +1135,32 @@ z2r_repo_get() {
   z2r_download_project_file "$1" "$2"
 }
 
+# идемпотентный рефреш заголовков штатных fake-файлов (Z2R_FAKE_REFRESH=0 отключает)
+fake_files_refresh() {
+  [ "${Z2R_FAKE_REFRESH:-1}" = "1" ] || return 0
+  [ -d "$ZATOR_ROOT/files/fake" ] || return 0
+  local names="3.bin 4.bin TLS_ClientHello_vk_ru.bin fake_syndata.bin fake_tls_1.bin fake_tls_2.bin fake_tls_3.bin fake_tls_4.bin fake_tls_5.bin fake_tls_6.bin fake_tls_7.bin fake_tls_8.bin tls13_hcaptcha.bin tls_clienthello_1.bin tls_clienthello_10.bin tls_clienthello_11.bin tls_clienthello_12.bin tls_clienthello_13.bin tls_clienthello_14.bin tls_clienthello_15.bin tls_clienthello_16.bin tls_clienthello_17.bin tls_clienthello_18.bin tls_clienthello_2.bin tls_clienthello_2n.bin tls_clienthello_3.bin tls_clienthello_4.bin tls_clienthello_4pda_to.bin tls_clienthello_5.bin tls_clienthello_6a.bin tls_clienthello_7.bin tls_clienthello_9.bin tls_clienthello_activated.bin tls_clienthello_chat_deepseek_com.bin tls_clienthello_google_com_tlsrec.bin tls_clienthello_gosuslugi_ru.bin tls_clienthello_iana_org.bin tls_clienthello_iana_org_bigsize.bin tls_clienthello_max_ru.bin tls_clienthello_rutracker_org_kyber.bin tls_clienthello_sberbank_ru.bin tls_clienthello_vk_com.bin tls_clienthello_vk_com_kyber.bin tls_clienthello_www_google_com.bin tls_clienthello_www_google_com_2.bin tls_hcaptcha_com.bin tls_serverhello_google_com_tls13.bin"
+  local cache="$ZATOR_ROOT/extra_strats/cache"
+  local bak="$cache/fake_orig" log="$cache/fake_refresh.log"
+  mkdir -p "$bak" 2>/dev/null || return 0
+  printf '\026\003\001' > "$cache/.fake_hdr_a" 2>/dev/null || return 0
+  printf '\026\003\003' > "$cache/.fake_hdr_b" 2>/dev/null || return 0
+  local name f
+  for name in $names; do
+    f="$ZATOR_ROOT/files/fake/$name"
+    [ -f "$f" ] || continue
+    head -c 3 "$f" 2>/dev/null | cmp -s - "$cache/.fake_hdr_a" || continue
+    [ -f "$bak/$name" ] || cp -p "$f" "$bak/$name" 2>/dev/null
+    printf '\003' | dd of="$f" bs=1 seek=2 conv=notrunc 2>/dev/null || continue
+    if head -c 3 "$f" 2>/dev/null | cmp -s - "$cache/.fake_hdr_b"; then
+      echo "$(date '+%Y-%m-%d %H:%M:%S') refreshed $name" >> "$log" 2>/dev/null
+    else
+      [ -f "$bak/$name" ] && cp -p "$bak/$name" "$f" 2>/dev/null
+    fi
+  done
+  return 0
+}
+
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
 
@@ -1154,7 +1188,7 @@ get_repo() {
   else
     circular_runtime_update_from_repo || return 1
   fi
-  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ]      && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && { [ -x "$STRATEGY_VALIDATOR_ENTWARE_INIT" ] || [ -x "$STRATEGY_VALIDATOR_OPENWRT_INIT" ] || [ -f "$STRATEGY_VALIDATOR_SYSTEMD_UNIT" ]; }; then
     :
   else
     strategy_validator_install_service || return 1
@@ -1192,6 +1226,7 @@ get_repo() {
     }
     rm -f "$fake_archive"
   fi
+  fake_files_refresh
   z2r_repo_get "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
   z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
   # TCP_Custom.txt — пользовательский список: существующий файл не трогаем.
@@ -1619,6 +1654,21 @@ z2r_prune_staged_sources() {
  find "$base/ip2net" -mindepth 1 ! -name ip2net -exec rm -rf {} + 2>/dev/null || true
  find "$base/mdig" -mindepth 1 ! -name mdig -exec rm -rf {} + 2>/dev/null || true
  rm -f "$base/Makefile"
+}
+
+#skip патчи вопросов и валидации конфига
+patch_installer_zapret() {
+	echo "Патчим installer_easy.sh для skip вопросов и валидации конфига. И installer.sh для пропуска press enter"
+	sed -i -E '/^[[:space:]]*(select_fwtype|select_ipv6|ask_config|ask_config_tmpdir|ask_config_offload)[[:space:]]*$/ s/^([[:space:]]*)/\1# /' "$ZAPRET2_ROOT/install_easy.sh"
+	sed -i -E '/^[[:space:]]*exitp[[:space:]]+30[[:space:]]*$/ s/^([[:space:]]*)/\1# /' "$ZAPRET2_ROOT/common/installer.sh"
+	echo "Пропатчено"
+}
+
+unpatch_installer_zapret() {
+	echo "Всё хорошо. Откатываем патч installer_easy.sh и installer.sh"
+	sed -i -E 's/^([[:space:]]*)#[[:space:]]*(select_fwtype|select_ipv6|ask_config|ask_config_tmpdir|ask_config_offload)[[:space:]]*$/\1\2/' "$ZAPRET2_ROOT/install_easy.sh"
+	sed -i -E 's/^([[:space:]]*)#[[:space:]]*exitp[[:space:]]+30[[:space:]]*$/\1exitp 30/' "$ZAPRET2_ROOT/common/installer.sh"
+	echo "Откат патча выполнен"
 }
 
 #Запуск установочных скриптов и перезагрузка
@@ -2399,7 +2449,7 @@ get_menu() {
     fi
     provider_init_once
     init_telemetry
-    update_recommendations
+    # Подсказки загружаются лениво при подборе стратегии, не тормозят главное меню.
   while true; do
   	local strategies_status
     strategies_status=$(get_orchestra_locks_info)
@@ -2435,6 +2485,17 @@ get_menu() {
 "
       MENU_ERR_STATE="${red} (ошибок: ${MENU_ERR_N})${yellow}"
     fi
+    # WAN-порт из config рядом с платформой: IFACE_WAN прописан установщиком
+    # на Keenetic; на OpenWRT/VPS эталонная строка закомментирована и строка
+    # в шапке не появляется (config_get_iface_wan читает только раскомментированное)
+    MENU_WAN_LINE=""
+    if type config_get_iface_wan >/dev/null 2>&1; then
+      MENU_WAN_VAL="$(config_get_iface_wan 2>/dev/null || true)"
+      if [ -n "$MENU_WAN_VAL" ]; then
+        MENU_WAN_LINE="WAN-порт: ${plain}${MENU_WAN_VAL}${yellow}
+"
+      fi
+    fi
 	TITLE_MENU_LINE=""
     if [[ -s "$PREMIUM_TITLE_FILE" ]]; then
       TITLE_MENU_LINE="\n${pink}Титул:${plain} $(cat "$PREMIUM_TITLE_FILE")${yellow}\n"
@@ -2459,7 +2520,7 @@ ${green}Я черепашка Дейв. И я медленный.${yellow}
 ${green}Прямо как твой интернет.${yellow}
 Город/провайдер: ${plain}${PROVIDER_MENU}${yellow}
 Платформа: ${plain}${MENU_PLATFORM}${yellow}
-Аптайм: ${plain}${MENU_UPTIME}${yellow}
+${MENU_WAN_LINE}Аптайм: ${plain}${MENU_UPTIME}${yellow}
 RAM: ${plain}${MENU_RAM}${yellow}
 Версия config файла от: ${plain}${MENU_CONFIG_DATE}${yellow}
 zator от: ${plain}${MENU_ZATOR_DATE}${yellow}${MENU_WEBUI_PART}
@@ -2892,7 +2953,9 @@ while true; do
  if [ "$hardware" = "keenetic" ]; then
  	 ensure_keenetic_policy_config "$ZAPRET2_ROOT/config.default"
  fi
+ patch_installer_zapret
  install_zapret_reboot
+ unpatch_installer_zapret
  # Обновление = переустановка: watchdog пережил её (см. remove_zapret выше);
  # если демон самоостановился в паузу без init-скрипта — поднимаем.
  watchdog_ensure_running || true

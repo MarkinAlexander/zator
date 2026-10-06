@@ -1596,6 +1596,12 @@ class FakeRouterState:
         self.blob_override_file = os.path.join(self.orch_dir, "blob_override.tsv")
         # per-profile TLS blob: profile -> имя (z2r_prof_N | fake_default_tls)
         self.blob_overrides = {}
+        # режим фейков (mode_override.tsv): profile -> clone|classic (нет = classic)
+        self.mode_overrides = {}
+        # SNI клона (sni_override.tsv): profile -> домен ("" = дефолт)
+        self.sni_overrides = {}
+        # лимит клонов (clonesize.tsv): profile -> байты ("" = без ограничения)
+        self.clone_sizes = {}
         for f in (self.lock_file, self.lock_manual_file):
             open(f, "w", encoding="utf-8").close()
 
@@ -1628,6 +1634,7 @@ class FakeRouterState:
         self.check_result = check_result  # ok | fail | mixed
         self.simulate_error = set(simulate_error or [])
         self.provider = provider
+        self.recommendations_status = "ready"
         self.rst_guard_lua = True
         self.backups = []
 
@@ -1947,6 +1954,9 @@ class FakeRouterState:
             "current_blob": current_blob,
             "available_blobs": available_blobs,
             "profile_blobs": self.build_tls_blob_profile_blobs(),
+            "profile_modes": self.build_fake_mode_modes(),
+            "profile_snis": self.build_fake_mode_snis(),
+            "profile_sizes": self.build_clone_size_sizes(),
         }
 
     def build_tls_blob_profile_blobs(self):
@@ -1959,6 +1969,42 @@ class FakeRouterState:
             else:
                 out[p] = name
         return out
+
+    def build_fake_mode_modes(self):
+        """mode_override_get() — profile_modes для GET-ответов (нет строки = classic)."""
+        return {p: self.mode_overrides.get(p, "classic") for p in BLOB_PROFILE_IDS}
+
+    def build_fake_mode_snis(self):
+        """sni_override_get() — profile_snis для GET-ответов ("" = дефолт www.google.com)."""
+        return {p: self.sni_overrides.get(p, "") for p in BLOB_PROFILE_IDS}
+
+    def build_clone_size_sizes(self):
+        """clone_size_get() — profile_sizes для GET-ответов ("" = без ограничения)."""
+        return {p: self.clone_sizes.get(p, "") for p in BLOB_PROFILE_IDS}
+
+    def apply_clone_size(self, profile, value):
+        """api_clone_size_set() — _lib.sh. Рестарта нет: рантайм-переключение."""
+        if profile not in BLOB_PROFILE_IDS:
+            raise ValueError("Некорректный профиль: {0}".format(profile))
+        if value in ("", "global"):
+            self.clone_sizes.pop(profile, None)
+            return {"ok": True, "restarted": False, "restart_required": False}
+        if not re.match(r"^[0-9]+$", str(value)) or not 64 <= int(value) <= 1200:
+            raise ValueError("Некорректный размер: целое число 64..1200")
+        self.clone_sizes[profile] = str(int(value))
+        return {"ok": True, "restarted": False, "restart_required": False}
+
+    def apply_fake_mode(self, profile, value):
+        """api_fake_mode_set() — _lib.sh. Рестарта нет: рантайм-переключение."""
+        if profile not in BLOB_PROFILE_IDS:
+            raise ValueError("Некорректный профиль: {0}".format(profile))
+        if value == "classic":
+            self.mode_overrides.pop(profile, None)
+            return {"ok": True, "restarted": False, "restart_required": False}
+        if value == "clone":
+            self.mode_overrides[profile] = "clone"
+            return {"ok": True, "restarted": False, "restart_required": False}
+        raise ValueError("Некорректное значение режима: {0}".format(value))
 
     def apply_tls_blob_profile(self, profile, value):
         """api_tls_blob_profile_set() — _lib.sh."""
@@ -2302,6 +2348,24 @@ class FakeRouterState:
 
     # --- Провайдер ----------------------------------------------------------
 
+    def build_recommendations(self):
+        """Детерминированная симуляция UI; никаких запросов к живой статистике."""
+        status = self.recommendations_status
+        samples = 6 if status == "insufficient" else 24 if status in ("ready", "stale") else 0
+        profiles = {}
+        for profile in range(1, 5):
+            top = [{"strategy": strategy, "success_pct": pct, "samples": count, "mode": mode}
+                   for strategy, pct, count, mode in ((7, 92, 12, "clone"), (3, 80, 10, "classic"), (12, 75, 8, "mixed"))]
+            profiles[str(profile)] = {
+                "samples": samples, "top": top if status in ("ready", "stale") else [],
+                "clone_recommended": status in ("ready", "stale") and profile in (1, 4),
+                "classic_pct": 60 if samples >= 10 else None,
+                "clone_pct": 90 if samples >= 10 else None,
+            }
+        return {"provider": self.provider + " · симуляция dev", "samples": samples,
+                "minimum": 10, "generated_at": int(time.time()) - (86400 if status == "stale" else 0),
+                "status": status, "profiles": profiles}
+
     def build_provider_settings(self):
         """api_provider_get() — _lib.sh."""
         return {"provider": self.provider}
@@ -2624,6 +2688,7 @@ class FakeRouterState:
         return {
             "nfqws2_running": bool(self.nfqws2_running),
             "check_result": self.check_result,
+            "recommendations_status": self.recommendations_status,
             "simulate_error": sorted(self.simulate_error),
             "provider": self.provider,
             "rst_guard_lua": bool(self.rst_guard_lua),
@@ -3009,7 +3074,9 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
 
         if self.command == "GET":
             with self.state.lock:
-                if setting == "wg_blob":
+                if setting == "recommendations":
+                    self._send_json(self.state.build_recommendations())
+                elif setting == "wg_blob":
                     self._log("GET {0} | wg_blob settings".format(parsed.path))
                     self._send_json(self.state.build_wg_blob_settings())
                 elif setting == "wg_state":
@@ -3065,6 +3132,30 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                         result = self.state.apply_tls_blob_profile(profile, blob)
                         self._log("POST {0} | tls_blob_profile={1} value={2}".format(
                             parsed.path, profile, blob))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "fake_mode":
+                profile = params.get("profile", "")
+                value = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_fake_mode(profile, value)
+                        self._log("POST {0} | fake_mode={1} value={2}".format(
+                            parsed.path, profile, value))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "clone_size":
+                profile = params.get("profile", "")
+                value = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_clone_size(profile, value)
+                        self._log("POST {0} | clone_size={1} value={2}".format(
+                            parsed.path, profile, value))
                         self._send_json(result)
                 except ValueError as e:
                     self._send_error_json(400, str(e))
@@ -3348,6 +3439,11 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                 self._send_error_json(400, "Невалидный JSON")
                 return
             with self.state.lock:
+                if "recommendations_status" in payload:
+                    if payload["recommendations_status"] not in ("ready", "insufficient", "stale", "unavailable", "unknown_provider"):
+                        self._send_error_json(400, "Некорректный статус рекомендаций")
+                        return
+                    self.state.recommendations_status = payload["recommendations_status"]
                 if "nfqws2_running" in payload:
                     self.state.nfqws2_running = bool(payload["nfqws2_running"])
                 if "check_result" in payload:

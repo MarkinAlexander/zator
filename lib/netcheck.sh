@@ -149,10 +149,15 @@ z2r_tls_poll_sleep() {
 }
 
 z2r_tls_check_target() {
-    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0
+    local url="$1" tmp v12 v13 dl dl1 dl2 dstate p12 p13 d1_pid d2_pid peek t0 tls_gap
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/z2r_tls.XXXXXX")" || return 1
     z2r_tls_probe_version "$url" 12 >"$tmp/v12" 2>/dev/null </dev/null &
     p12=$!
+    # Z2R_TLS_PROBE_GAP: интервал между пробами TLS 1.2 и 1.3 — одновременные
+    # попытки обеих версий на одну цель читаются ТСПУ как сканер
+    tls_gap="${Z2R_TLS_PROBE_GAP:-0}"
+    case "$tls_gap" in ''|*[!0-9]*) tls_gap=0 ;; esac
+    [ "$tls_gap" -gt 0 ] && sleep "$tls_gap"
     z2r_tls_probe_version "$url" 13 >"$tmp/v13" 2>/dev/null </dev/null &
     p13=$!
 
@@ -770,34 +775,201 @@ check_access() {
 }
 
 
+# --- DoH-эталон и проверка подмены DNS (автор zator) -----------------------
+
+# Каскад DoH-резолверов эталона: dns.google -> https://8.8.8.8 (тот же JSON-
+# API по IP, работает когда имя dns.google само не резолвится) -> quad9
+# wire-DoH. Четвёртый резерв — известные адреса рутрекера (см. гейт).
+Z2R_DNS_DOH_URL="${Z2R_DNS_DOH_URL:-https://dns.quad9.net/dns-query}"
+Z2R_DNS_DOH_TIMEOUT="${Z2R_DNS_DOH_TIMEOUT:-6}"
+# Известные адреса rutracker.org (Cloudflare), сняты 2026-09-30. Ротация
+# возможна — поэтому это крайний случай, а не единственный эталон.
+Z2R_DNS_REF_DOMAIN="${Z2R_DNS_REF_DOMAIN:-rutracker.org}"
+Z2R_DNS_REF_ADDRS="${Z2R_DNS_REF_ADDRS:-172.67.182.196 104.21.32.39}"
+
+# A-запись по wire-формату RFC 8484 (quad9): запрос собирает printf (метки
+# домена -> \xNN-байты), ответ разбирают hexdump+awk — xxd/dig не нужны
+# (BusyBox). Печатает адреса построчно, пусто = не вышло.
+z2r_doh_a_lookup() {
+    local domain="$1" rest="$1" label fmt="" len
+    printf '%s' "$domain" | grep -Eq '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' || return 1
+    while :; do
+        label="${rest%%.*}"
+        len="${#label}"
+        [ "$len" -gt 0 ] || break
+        fmt="${fmt}\\x$(printf '%02x' "$len")${label}"
+        case "$rest" in *.*) rest="${rest#*.}" ;; *) break ;; esac
+    done
+    [ -n "$fmt" ] || return 1
+    printf "\\x00\\x00\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00${fmt}\\x00\\x00\\x01\\x00\\x01" \
+        | curl -s -m "${Z2R_DNS_DOH_TIMEOUT:-6}" -A "${Z2R_CURL_UA:-}" \
+            -H 'content-type: application/dns-message' \
+            -H 'accept: application/dns-message' \
+            --data-binary @- "${Z2R_DNS_DOH_URL:-https://dns.quad9.net/dns-query}" 2>/dev/null \
+        | hexdump -v -e '1/1 "%d\n"' \
+        | awk '
+            function b(v) { return v < 0 ? v + 256 : v }
+            { a[NR] = $1 }
+            END {
+                for (i = 1; i <= NR - 13; i++) {
+                    if (b(a[i])==0 && b(a[i+1])==1 && b(a[i+2])==0 && b(a[i+3])==1 && b(a[i+8])==0 && b(a[i+9])==4)
+                        print b(a[i+10]) "." b(a[i+11]) "." b(a[i+12]) "." b(a[i+13])
+                }
+            }' \
+        | sort -u
+}
+
+# Эталонный резолв по каскаду DoH. Печатает строку "источник|адреса"
+# (пустой источник = все резолверы недоступны). Источник возвращается в
+# stdout, а не глобалькой: вызов из $(...) субшелл, присваивание наружу
+# не доходит. Адреса — в одну строку через пробел: sort -u отдаёт колонку
+# с переводами строк, и сравнение по пробелам в гейте тогда ложно видит
+# подмену даже при полном совпадении.
+z2r_doh_reference() {
+    local domain="$1" raw ips
+    raw="$(curl -s -A "$Z2R_CURL_UA" --max-time "${Z2R_DNS_DOH_TIMEOUT:-6}" \
+        "https://dns.google/resolve?name=${domain}&type=A" 2>/dev/null)"
+    if [ -n "$raw" ]; then
+        ips="$(printf '%s\n' "$raw" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u | tr '\n' ' ')"
+        ips="${ips% }"
+        [ -n "$ips" ] && { printf 'Google DoH (dns.google)|%s\n' "$ips"; return 0; }
+    fi
+    raw="$(curl -sk -A "$Z2R_CURL_UA" --max-time "${Z2R_DNS_DOH_TIMEOUT:-6}" \
+        "https://8.8.8.8/resolve?name=${domain}&type=A" 2>/dev/null)"
+    if [ -n "$raw" ]; then
+        ips="$(printf '%s\n' "$raw" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u | tr '\n' ' ')"
+        ips="${ips% }"
+        [ -n "$ips" ] && { printf 'Google DoH (8.8.8.8)|%s\n' "$ips"; return 0; }
+    fi
+    ips="$(z2r_doh_a_lookup "$domain" | sort -u | tr '\n' ' ')"
+    ips="${ips% }"
+    if [ -n "$ips" ]; then
+        printf 'quad9 DoH (dns.quad9.net, wire)|%s\n' "$ips"
+        return 0
+    fi
+    printf '|\n'
+    return 1
+}
+
+# Пред-проверка DNS перед суперавтопрогоном. Сверяется СИСТЕМНЫЙ резолвер
+# (им же резолвятся все пробы прогона — если роутерный DNS врёт, подбор
+# стратегий бессмысленен). Эталон: каскад DoH, а при полной недоступности
+# DoH — прямой UDP-запрос к 8.8.8.8. Возврат: 0 = чисто; 1 = неопределимо
+# (эталона нет / системный DNS молчит — НЕ повод останавливать прогон);
+# 2 = системный DNS подменён/сломан (NXDOMAIN или заглушка) — стоп.
+z2r_dns_spoof_gate() {
+    local domain="${1:-$Z2R_DNS_REF_DOMAIN}"
+    local refline ref ref_src raw sys srv parsed hits a
+    echo -e "${cyan:-}--- Проверка подмены DNS перед прогоном ---${plain:-}"
+    refline="$(z2r_doh_reference "$domain")" || true
+    ref_src="${refline%%|*}"
+    ref="${refline#*|}"
+    if [ -z "$ref" ]; then
+        # DoH недоступны: резервный эталон — чистый UDP-запрос к 8.8.8.8
+        raw="$(nslookup "$domain" 8.8.8.8 2>/dev/null)"
+        parsed="$(printf '%s\n' "$raw" | z2r_dns_parse_addrs 8.8.8.8)"
+        ref="$(z2r_dns_field "$parsed" 1)"
+        [ -n "$ref" ] && ref_src="UDP 8.8.8.8 (DoH недоступны)"
+    fi
+    echo -e "Эталон (${ref_src:-все резолверы недоступны}): ${ref:-—}"
+    # системный резолвер: адрес самого сервера из шапки исключаем, чтобы
+    # он не попал в список ответов
+    raw="$(nslookup "$domain" 2>/dev/null)"
+    srv="$(printf '%s\n' "$raw" | sed -n 's/^Address:[[:space:]]*\([0-9][0-9.]*\).*$/\1/p' | head -n1)"
+    parsed="$(printf '%s\n' "$raw" | z2r_dns_parse_addrs "$srv")"
+    sys="$(z2r_dns_field "$parsed" 1)"
+    echo -e "Системный DNS (nslookup ${domain}): ${sys:-нет IPv4 в ответе}"
+    # совпадение с известными адресами или живым эталоном = чисто
+    hits=""
+    for a in $sys; do
+        case " $Z2R_DNS_REF_ADDRS " in *" $a "*) hits="$hits $a" ;; esac
+        case " $ref " in *" $a "*) hits="$hits $a" ;; esac
+    done
+    if [ -n "$hits" ]; then
+        echo -e "${green:-}DNS чист: системные ответы совпадают с эталоном/известными адресами. Продолжаем прогон.${plain:-}"
+        return 0
+    fi
+    case "$raw" in
+        *NXDOMAIN*|*"can't find"*|*"not found"*)
+            echo -e "${red:-}СИСТЕМНЫЙ DNS ПОДМЕНЁН/СЛОМАН: отвечает NXDOMAIN на существующий домен.${plain:-}"
+            echo -e "${red:-}Подбор стратегий бессмысленен — все пробы прогона не смогут отрезолвить цели.${plain:-}"
+            z2r_dns_spoof_gate_help
+            return 2
+            ;;
+    esac
+    if [ -n "$sys" ]; then
+        if [ -n "$ref" ]; then
+            echo -e "${red:-}СИСТЕМНЫЙ DNS ОТВЕЧАЕТ МИМО ЭТАЛОНА (похоже на заглушку провайдера).${plain:-}"
+            echo -e "Ответ системного DNS: ${sys}"
+            echo -e "Эталон (${ref_src}): ${ref}"
+            z2r_dns_spoof_gate_help
+            return 2
+        fi
+        # эталона нет: ротация CDN не отличима от заглушки — не останавливаем
+        echo -e "${yellow:-}Не удалось сверить с эталоном (резолверы недоступны), адреса вне известного списка.${plain:-}"
+        echo -e "${yellow:-}Если это заглушка — результаты прогона будут искажены. Продолжаю по вашей команде.${plain:-}"
+        return 1
+    fi
+    echo -e "${yellow:-}Системный DNS не отвечает. Это не подтверждённая подмена — прогон продолжается,${plain:-}"
+    echo -e "${yellow:-}но если резолв молчит и в системе, поможет подбор антиспуфа DNS (профиль 10).${plain:-}"
+    return 1
+}
+
+z2r_dns_spoof_gate_help() {
+    echo -e "${red:-}Суперавтопрогон ОСТАНОВЛЕН: при нерабочем/подменённом DNS все проверки дадут ложный результат.${plain:-}"
+    echo ""
+    echo " Что можно сделать:"
+    echo "  - поискать в Google по модели вашего роутера, как сменить DNS"
+    echo "    (обычно: веб-интерфейс роутера -> WAN/Internet -> DNS-серверы;"
+    echo "    прописать 8.8.8.8 / 1.1.1.1 вместо DNS провайдера);"
+    echo "  - прописать DNS вручную на устройствах, если роутер не позволяет;"
+    echo "  - подобрать стратегию антиспуфинга DNS: Управление стратегиями ->"
+    echo "    Профиль 10 (DNS антиспуф) -> номер стратегии или автопрогон;"
+    echo "  - после исправления DNS запустить суперавтопрогон заново."
+}
+
+# Большая бирюзовая подсказка после ПОЛНОГО краса YouTube (просьба автора):
+# когда ни одна стратегия не открыла youtube, дело почти всегда не в
+# стратегиях, а в залипшем канале/сессиях провайдера — перезагрузка роутера
+# (особенно Keenetic) часто возвращает доступ. WAN-порт показываем из config
+# (config_get_iface_wan: только явно прописанный, раскомментированный
+# IFACE_WAN — у Keenetic он задан установщиком, у OpenWRT/VPS эталонный
+# #IFACE_WAN=eth1 закомментирован и не показывается), чтобы пользователь
+# сверил, что обход вообще смотрит в тот интерфейс.
+z2r_youtube_reboot_advice() {
+    local wan=""
+    if type config_get_iface_wan >/dev/null 2>&1; then
+        wan="$(config_get_iface_wan 2>/dev/null || true)"
+    fi
+    echo ""
+    echo -e "${Fcyan:-}=================================================================${plain:-}"
+    echo -e "${Fcyan:-}   НИ ОДНА СТРАТЕГИЯ НЕ ОТКРЫЛА YOUTUBE.                          ${plain:-}"
+    echo -e "${Fcyan:-}   ПОПРОБУЙТЕ ПЕРЕЗАГРУЗИТЬ РОУТЕР И ПОВТОРИТЬ ПОДБОР.            ${plain:-}"
+    echo -e "${Fcyan:-}=================================================================${plain:-}"
+    if [ -n "$wan" ]; then
+        echo -e "${Fcyan:-}WAN-порт из config: IFACE_WAN=\"${wan}\" — проверьте, что это точно ваш интернет-интерфейс.${plain:-}"
+    fi
+    return 0
+}
+
 check_dns() {
     local DOMAIN="${1:-rutracker.org}"
-    local DOH_RAW DOH_IPS NS_RAW NS_IPS MATCH_IPS MATCH_COUNT DOH_COUNT NS_COUNT ip
-
+    local DOH_LINE DOH_IPS DOH_SRC NS_RAW NS_IPS MATCH_IPS MATCH_COUNT DOH_COUNT NS_COUNT ip
 
     echo "================================================"
     echo " Анализ DNS для домена: $DOMAIN"
     echo "================================================"
 
-    DOH_RAW=$(curl -s -A "$Z2R_CURL_UA" --max-time 5 "https://dns.google/resolve?name=${DOMAIN}&type=A")
-
-    if [ -z "$DOH_RAW" ]; then
-        echo -e "${red}[-] Ошибка: Google DoH недоступен${plain}"
-        return 1
-    fi
-
-    DOH_IPS=$(
-        echo "$DOH_RAW" \
-        | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' \
-        | sort -u
-    )
+    DOH_LINE="$(z2r_doh_reference "$DOMAIN")" || true
+    DOH_SRC="${DOH_LINE%%|*}"
+    DOH_IPS="${DOH_LINE#*|}"
 
     if [ -z "$DOH_IPS" ]; then
-        echo -e "${red}[-] Ошибка: Google DoH не вернул IPv4 адреса${plain}"
+        echo -e "${red}[-] Ошибка: DoH-резолверы недоступны (dns.google, 8.8.8.8, quad9)${plain}"
         return 1
     fi
 
-    echo -e "${yellow}-> Эталонные IP от DoH:${plain}"
+    echo -e "${yellow}-> Эталонные IP от ${DOH_SRC}:${plain}"
     for ip in $DOH_IPS; do
         echo "  $ip"
     done
@@ -849,11 +1021,16 @@ check_dns() {
     MATCH_IPS=""
     MATCH_COUNT=0
 
+    # DOH_IPS теперь одна строка через пробел (нормализация каскада) —
+    # grep -Fxq «целая строка == IP» больше не матчит; ищем по границам
+    # слов, как в z2r_dns_spoof_gate
     for ip in $NS_IPS; do
-        if echo "$DOH_IPS" | grep -Fxq "$ip"; then
-            MATCH_IPS="$MATCH_IPS $ip"
-            MATCH_COUNT=$((MATCH_COUNT + 1))
-        fi
+        case " $DOH_IPS " in
+            *" $ip "*)
+                MATCH_IPS="$MATCH_IPS $ip"
+                MATCH_COUNT=$((MATCH_COUNT + 1))
+                ;;
+        esac
     done
 
     DOH_COUNT=$(echo "$DOH_IPS" | wc -w | tr -d ' ')

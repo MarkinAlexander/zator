@@ -72,6 +72,12 @@ export interface TlsBlobSettings {
   available_blobs?: string[]
   // «профиль -> значение»: "" = как глобальный, fake_default_tls | файл слота
   profile_blobs?: Record<string, string>
+  // «профиль -> режим фейков»: classic | clone (нет строки = classic)
+  profile_modes?: Record<string, string>
+  // «профиль -> SNI клона»: "" = невинный дефолт (www.google.com)
+  profile_snis?: Record<string, string>
+  // «профиль -> лимит клонов в байтах»: "" = без ограничения (граница ТСПУ 1200)
+  profile_sizes?: Record<string, string>
 }
 
 export interface WgBlobSettings {
@@ -108,6 +114,23 @@ export interface PortInfo {
 export interface PortsSettings {
   tcp?: PortInfo
   udp?: PortInfo
+}
+
+export interface RecommendationProfile {
+  samples: number
+  top: { strategy: number; success_pct: number; samples: number; mode: 'classic' | 'clone' | 'mixed' }[]
+  clone_recommended: boolean
+  classic_pct: number | null
+  clone_pct: number | null
+}
+
+export interface Recommendations {
+  provider: string
+  samples: number
+  minimum: 10
+  generated_at: number
+  status: 'ready' | 'insufficient' | 'unavailable' | 'unknown_provider' | 'stale'
+  profiles: Record<string, RecommendationProfile>
 }
 
 export interface ProviderSettings {

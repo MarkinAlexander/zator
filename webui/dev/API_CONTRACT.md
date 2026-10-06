@@ -390,6 +390,19 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
     "2": "tls_clienthello_5.bin",     // файл слота z2r_prof_2
     "3": "",
     "8": "fake_default_tls"           // встроенный блоб
+  },
+  "profile_modes": {                  // per-profile режим фейков (mode_override.tsv)
+    "1": "classic",                   // classic = штатные блобы конфига (нет строки)
+    "4": "clone"                      // clone = блоб maxru|fake_default_tls строится
+                                      //         из ClientHello пользователя (locked.lua)
+  },
+  "profile_snis": {                   // SNI клона по профилям (sni_override.tsv)
+    "1": "",                          // "" = невинный дефолт www.google.com
+    "3": "vk.ru"                      // меняется в CLI-меню (п.16 -> SNI)
+  },
+  "profile_sizes": {                  // лимит клонов по профилям (clonesize.tsv)
+    "1": "",                          // "" = без ограничения (граница ТСПУ 1200 Б)
+    "4": "964"                        // клоны профиля режутся до «не больше N Б»
   }
 }
 ```
@@ -470,6 +483,55 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 }                                 // при сетевом сбое (кэш не трогается)
 ```
 
+### Рекомендации провайдера — отдельный GET
+
+`GET /cgi-bin/settings.cgi?setting=recommendations` загружается только на странице
+«Стратегии», не входит в `state.cgi` или `status.cgi` и не меняет локи/настройки.
+После смены провайдера страница отменяет прежний запрос и читает данные заново.
+
+```json
+{
+  "provider": "MTS",
+  "samples": 24,
+  "minimum": 10,
+  "generated_at": 1791200000,
+  "status": "ready",
+  "profiles": {
+    "1": {
+      "samples": 24,
+      "top": [{"strategy": 7, "success_pct": 92, "samples": 12, "mode": "clone"}],
+      "clone_recommended": true,
+      "classic_pct": 60,
+      "clone_pct": 90
+    },
+    "2": {"samples": 0, "top": [], "clone_recommended": false, "classic_pct": null, "clone_pct": null},
+    "3": {"samples": 0, "top": [], "clone_recommended": false, "classic_pct": null, "clone_pct": null},
+    "4": {"samples": 0, "top": [], "clone_recommended": false, "classic_pct": null, "clone_pct": null}
+  }
+}
+```
+
+- `status`: `ready | insufficient | unavailable | unknown_provider | stale`.
+- `generated_at`: Unix timestamp в секундах. `stale` сохраняет старые валидные
+  данные: UI показывает их с датой и предупреждением о недоступности сервера.
+- При `samples < 10`/`insufficient` стратегии и clone-подсказки скрыты.
+- `top`: до 3 стратегий по блоку 1/2/3/4; `success_pct` — доля зелёных результатов
+  среди проверок данной стратегии, `samples` строки — число разных UUID,
+  проверивших её (для RKN один UUID проверяет несколько доменов).
+  `mode`: `classic | clone | mixed`. Это опыт сообщества, не гарантия работы.
+- Номер подставляется только в форму, без сохранения или автоматического set-lock.
+  Номера вне текущего `max_strategy` не предлагаются; обычный гейтинг сохраняется.
+- Clone-подсказка зависит только от `clone_recommended` сервера и скрывается,
+  если профиль уже в режиме clone; ссылка ведёт в `/settings/tls-blob`, без переключения.
+- Другие профили не имеют рекомендаций supersweep.
+
+**Dev:** fake-router возвращает явно помеченную «симуляция dev» ready-выборку,
+не читает живую статистику. `POST /__dev/state` с
+`{"recommendations_status":"insufficient"}` (также `ready`, `stale`, `unavailable`,
+`unknown_provider`) переключает сценарий; `simulate_error:["settings"]` даёт HTTP 500.
+Проверки: `node scripts/check-recommendations.mjs` из `webui-src/` и
+`python webui-src/scripts/check-recommendations.py` из корня.
+
 ### POST — применение настроек
 
 Тело: `setting=<...>&value=<...>` (для портов/провайдера — свои ключи, см. ниже).
@@ -478,6 +540,8 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 | --- | --- | --- |
 | `tls_blob` | `fake_default_tls` \| `tls_*.bin` \| `custom_tls.bin` | смена TLS-блоба: `fake_default_tls` — вернуться на встроенный (декларация `--blob=maxru:@...` сохраняется для обратного переключения); файл — активировать внешний (`fake_default_tls`→`maxru` в ссылках стратегий + замена пути, path-agnostic `zapret2\|zator`) |
 | `tls_blob_profile` | `profile=1\|2\|3\|4\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена) |
+| `fake_mode` | `profile=1\|2\|3\|4\|8&value=classic\|clone` | режим фейков профиля (mode_override.tsv): `classic` — сброс строки (штатные блобы конфига), `clone` — блоб `maxru\|fake_default_tls` строится в рантайме из ClientHello пользователя с невинным SNI (sni_override.tsv или www.google.com). Без рестарта, TTL-кэш locked.lua ~2с |
+| `clone_size` | `profile=1\|2\|3\|4\|8&value=""\|global\|<64..1200>` | лимит клон-пакетов профиля (clonesize.tsv): `""`/`global` — сброс (без ограничения, границу ТСПУ 1200 Б держит locked.lua), число — клоны режутся до «не больше N Б» согласованными группами расширений; резать не смогли — штатный блоб конфига. Без рестарта, TTL-кэш locked.lua ~2с |
 | `wg_blob` | `value=<wg_initial_fake_*>` | замена `--blob=fakewgblob:@.../<файл>` |
 | `wg_repeats` | `value=<2..99>` | замена `blob=fakewgblob:repeats=N` |
 | `wg_state` | `value=0\|1` | вкл/выкл стратегии WG (`--skip` перед `--filter-l7=wireguard`) |
@@ -505,6 +569,8 @@ fallback, `-k` как в TLS-чеках), обновляет кэш `latest.env`
 // hostlist/rst_guard/reasm/quic443/dns_desync также возвращают актуальное "state"
 // wg_blob/wg_repeats/wg_state принимают restart=0 — отложить рестарт (форма WG
 // меняет до трёх настроек одним сабмитом и рестартит один раз, последним запросом)
+// fake_mode:       { "ok": true, "restarted": false, "restart_required": false } — рестарта нет
+// clone_size:      { "ok": true, "restarted": false, "restart_required": false } — рестарта нет
 // tls_blob_profile: { "ok": true, "restarted": true|false, "restart_required": true|false }
 // — restart_required=false: применено через TTL-кэш locked.lua (~2с), рестарта нет;
 // restart_required=true: сменён файл слота z2r_prof_N, выполнен авто-рестарт

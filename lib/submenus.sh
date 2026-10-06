@@ -955,7 +955,8 @@ strategies_submenu() {
       submenu_item "10" "Профиль 10: DNS антиспуф UDP:53 [${MENU_PROFILE_MAX_10:-0}]" "udp" "$STRATEGY_STATE_DNS_UDP"
     fi
     submenu_item "11" "Авторотация TCP/HTTP [${auto_state}]"
-    submenu_item "12" "Диагностика: домен ломает DPI или обход?"
+    submenu_item "12" "Суперавтопрогон: YouTube + Googlevideo + Discord параллельно и карта РКН"
+    submenu_item "13" "Диагностика: домен ломает DPI или обход?"
     submenu_item "0" "Назад"
     echo ""
 
@@ -979,7 +980,9 @@ strategies_submenu() {
         orch_profile_try "2" "Профиль 2: TCP 443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
         ;;
       "3")
-        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://meduza.io"
+        if rkn_trial_domain_pick; then
+          orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://${RKN_TRIAL_DOMAIN}"
+        fi
         ;;
       "4")
         orch_profile_try "4" "Профиль 4: TCP 443 (Discord)" "tls" "https://discord.com/"
@@ -1035,6 +1038,14 @@ strategies_submenu() {
         pause_enter
         ;;
       "12")
+        if [ "$auto_enabled" = "1" ]; then
+          echo -e "${yellow}Суперавтопрогон недоступен при авторотации TCP/HTTP.${plain}"
+          pause_enter
+        else
+          supersweep_menu
+        fi
+        ;;
+      "13")
         dpidetect_menu
         ;;
       "0"|"")
@@ -1316,7 +1327,7 @@ provider_submenu() {
 
     submenu_item "1" "Указать провайдера вручную"
     submenu_item "2" "Определить провайдера заново (сбросить кэш)"
-    submenu_item "3" "Обновить базу рекомендаций (подсказки)"
+    submenu_item "3" "Обновить подсказки по статистике провайдера"
     submenu_item "0" "Назад"
     echo ""
 
@@ -1334,14 +1345,15 @@ provider_submenu() {
         pause_enter
         ;;
       "3")
-        echo "Обновляем базу рекомендаций..."
-        rm -f "$RECS_FILE"
-        update_recommendations
-        if [ -s "$RECS_FILE" ]; then
-          echo -e "${green}База успешно обновлена!${plain}"
-        else
-          echo -e "${red}Ошибка обновления базы.${plain}"
-        fi
+        echo "Обновляем подсказки с сервера статистики..."
+        # Явное обновление обходит TTL, но не удаляет рабочий кеш при сбое.
+        rm -f "${RECS_FILE}.request"
+        recommendations_load
+        case "$RECS_STATUS" in
+          ready|insufficient) echo -e "${green}Статистика обновлена.${plain}" ;;
+          *) echo -e "${yellow}Не удалось обновить статистику; сохранённые данные не удалены.${plain}" ;;
+        esac
+        show_hint 1
         sleep 1
         pause_enter
         ;;
@@ -1549,17 +1561,34 @@ tls_blob_submenu() {
       fi
       i=$((i+1))
     done
+    submenu_item "$i" "SNI клон-стратегий — по профилям"
+    local sni_item=$i
+    i=$((i+1))
+    submenu_item "$i" "Режим фейков — классика/клоны по профилям"
+    local mode_item=$i
+    i=$((i+1))
+    submenu_item "$i" "Размер клонов — максимальный размер по профилям"
+    local size_item=$i
     echo ""
     submenu_item "0" "Назад"
     echo ""
 
     read -re -p "Ваш выбор: " ans
     case "$ans" in
+      "0"|"")
+        return
+        ;;
       "1")
         menu_action_set_tls_blob
         ;;
-      "0"|"")
-        return
+      "$sni_item")
+        sni_submenu
+        ;;
+      "$mode_item")
+        fake_mode_submenu
+        ;;
+      "$size_item")
+        clone_size_submenu
         ;;
       *)
         if ui_is_number_in_range "$ans" 2 "$(( ${#profiles[@]} + 1 ))"; then
@@ -1573,8 +1602,434 @@ tls_blob_submenu() {
   done
 }
 
+# --- SNI клон-стратегий: невинное имя по профилю (sni_override.tsv) ---
+# Подменяет sni_first у клон-стратегий перед исполнением (locked.lua, ~2с,
+# без рестарта). Пусто = SNI из конфига стратегии.
+
+sni_preset_list() {
+  printf '%s\n' 300.ya.ru www.google.com max.ru hcaptcha.com
+}
+
+sni_profile_pick() {
+  local profile="$1" title="$2" choice cur preset domain i
+  local presets=()
+  while IFS= read -r preset; do presets+=("$preset"); done < <(sni_preset_list)
+  local reset_idx=$(( ${#presets[@]} + 1 ))
+  local custom_idx=$(( ${#presets[@]} + 2 ))
+
+  while true; do
+    clear -x
+    cur="$(sni_override_get "$profile")"
+    echo -e "${cyan}--- Профиль $profile ($title): SNI клон-стратегий ---${plain}"
+    echo ""
+    if [ -n "$cur" ]; then
+      echo -e "${yellow}Сейчас: ${green}${cur}${plain}"
+    else
+      echo -e "${yellow}Сейчас: ${plain}${green}из конфига стратегии${plain}"
+    fi
+    echo ""
+    i=1
+    for preset in "${presets[@]}"; do
+      submenu_item "$i" "$preset"
+      i=$((i+1))
+    done
+    submenu_item "$reset_idx" "Из конфига стратегии (сброс переопределения)"
+    submenu_item "$custom_idx" "Свой домен..."
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice
+    if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+      return
+    elif [ "$choice" = "$reset_idx" ]; then
+      if sni_override_clear "$profile"; then
+        echo -e "${green}Сброшено: профиль $profile берёт SNI из конфига стратегии.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сбросить переопределение.${plain}"
+      fi
+      pause_enter
+    elif ui_is_number_in_range "$choice" 1 "${#presets[@]}"; then
+      preset="${presets[$((choice-1))]}"
+      if sni_override_set "$profile" "$preset"; then
+        echo -e "${green}Профиль $profile: клон-стратегии используют SNI ${preset}.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сохранить.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$custom_idx" ]; then
+      read -re -p "Домен или ссылка (например, www.example.com или https://site.ru/x), 0 - отмена: " domain
+      if [ "$domain" = "0" ]; then
+        :
+      elif [ -n "$domain" ]; then
+        # хитрый ввод (схема/порт/путь/регистр/крайние точки) приводится к домену
+        domain="$(z2r_normalize_domain "$domain" 2>/dev/null)" || domain=""
+        if [ -z "$domain" ]; then
+          echo -e "${red}Не удалось распознать домен. Пример: www.example.com или https://site.ru/path${plain}"
+        elif sni_override_set "$profile" "$domain"; then
+          echo -e "${green}Профиль $profile: клон-стратегии используют SNI ${domain}.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Некорректный домен: строчные буквы/цифры/точки/дефисы, до 254 символов.${plain}"
+        fi
+      fi
+      pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+sni_submenu() {
+  local p ans i idx v
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(sni_override_supported_profiles)
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- SNI клон-стратегий (невинные имена) ---${plain}"
+    echo ""
+    echo -e "${yellow}Подменяется sni_first у клон-стратегий профиля; пусто = из конфига.${plain}"
+    echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(sni_override_get "${profiles[$idx]}")"
+      if [ -n "$v" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "из конфига" yellow
+      fi
+      i=$((i+1))
+    done
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      sni_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+# --- Режим фейков: классика / клоны по профилям (mode_override.tsv) ---
+# clone — блоб стратегии (maxru|fake_default_tls) строится в рантайме из
+# ClientHello пользователя, SNI клона — из меню SNI или невинный дефолт;
+# classic — штатные блобы конфига (текущее поведение). Меняется на лету.
+
+fake_mode_sni_display() {
+  local sni
+  sni="$(sni_override_get "$1")"
+  if [ -n "$sni" ]; then echo "$sni"; else echo "www.google.com (дефолт)"; fi
+}
+
+fake_mode_profile_pick() {
+  local profile="$1" title="$2" choice cur dsc
+
+  while true; do
+    clear -x
+    cur="$(mode_override_get "$profile")"
+    echo -e "${cyan}--- Профиль $profile ($title): режим фейков ---${plain}"
+    echo ""
+    if [ "$cur" = "clone" ]; then
+      echo -e "${yellow}Сейчас: ${green}клоны (ClientHello пользователя)${plain}"
+    else
+      echo -e "${yellow}Сейчас: ${green}классика (штатные блобы конфига)${plain}"
+    fi
+    echo -e "${yellow}SNI клона: ${plain}${green}$(fake_mode_sni_display "$profile")${plain}${yellow} — меняется в меню SNI${plain}"
+    echo -e "${yellow}Лимит клона: ${plain}${green}$(clone_size_display "$profile")${plain}${yellow} — меняется в меню «Размер клонов»${plain}"
+    echo ""
+    submenu_item "1" "Классика — штатные блобы конфига (сброс режима)"
+    submenu_item "2" "Клоны — ClientHello пользователя с невинным SNI"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice
+    case "$choice" in
+      "0"|"")
+        return
+        ;;
+      "1")
+        if mode_override_clear "$profile"; then
+          echo -e "${green}Сброшено: профиль $profile вернулся к классике.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сбросить режим.${plain}"
+        fi
+        pause_enter
+        ;;
+      "2")
+        # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): клоны некорректно
+        # работают с Discord. Функционал не режем: предупреждение + явное
+        # согласие. Снять — убрать эту ветку.
+        if [ "$profile" = "4" ] && [ "$cur" != "clone" ]; then
+          echo ""
+          echo -e "${yellow}Внимание: клоны не корректно работают с Discord.${plain}"
+          echo -e "Рабочую стратегию Discord подбирает суперавтопрогон или перебор п.4."
+          dsc=""
+          read -re -p "Всё равно включить клоны? 1 - да, Enter - нет: " dsc || dsc=""
+          if [ "$dsc" != "1" ]; then
+            echo "Отмена — режим не менялся."
+            pause_enter
+            continue
+          fi
+        fi
+        if mode_override_set "$profile" clone; then
+          echo -e "${green}Профиль $profile: клоны ClientHello пользователя с невинным SNI.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сохранить режим.${plain}"
+        fi
+        pause_enter
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
+fake_mode_submenu() {
+  local p ans i idx v dsc dsc_skip
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(mode_override_supported_profiles)
+  local all_clone=$(( ${#profiles[@]} + 1 ))
+  local all_classic=$(( ${#profiles[@]} + 2 ))
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Режим фейков: классика / клоны ---${plain}"
+    echo ""
+    echo -e "${yellow}Клоны: блоб стратегии (maxru|fake_default_tls) строится из${plain}"
+    echo -e "${yellow}ClientHello пользователя, SNI — невинный (меню SNI рядом).${plain}"
+    echo -e "${yellow}Классика: штатные блобы конфига, как прописано.${plain}"
+    echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(mode_override_get "${profiles[$idx]}")"
+      if [ "$v" = "clone" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "клоны" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "классика" yellow
+      fi
+      i=$((i+1))
+    done
+    submenu_item "$all_clone" "Клоны — включить для всех профилей"
+    submenu_item "$all_classic" "Классика — включить для всех профилей"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      fake_mode_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
+    elif [ "$ans" = "$all_clone" ]; then
+      # ВРЕМЕННЫЙ ГЕЙТ (просьба владельца, 2026-10): Discord не включаем
+      # молча — клоны некорректно работают с Discord (см. fake_mode_profile_pick).
+      # Отказ = клоны всем, кроме Discord; согласие = как раньше, всем.
+      dsc_skip=0
+      if [ "$(mode_override_get 4)" != "clone" ]; then
+        echo ""
+        echo -e "${yellow}Внимание: клоны не корректно работают с Discord.${plain}"
+        dsc=""
+        read -re -p "Включить клоны и для Discord? 1 - да, Enter - нет (остальным включим): " dsc || dsc=""
+        [ "$dsc" = "1" ] || dsc_skip=1
+      fi
+      for p in "${profiles[@]}"; do
+        if [ "$dsc_skip" = 1 ] && [ "$p" = "4" ]; then continue; fi
+        mode_override_set "$p" clone || echo -e "${red}Не удалось включить клоны для профиля $p.${plain}"
+      done
+      if [ "$dsc_skip" = 1 ]; then
+        echo -e "${green}Клоны включены для всех профилей, кроме Discord (4) — там осталась классика.${plain}"
+      else
+        echo -e "${green}Клоны включены для всех профилей.${plain}"
+      fi
+      echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+      telemetry_notify
+      pause_enter
+    elif [ "$ans" = "$all_classic" ]; then
+      for p in "${profiles[@]}"; do
+        mode_override_clear "$p" || echo -e "${red}Не удалось сбросить режим профиля $p.${plain}"
+      done
+      echo -e "${green}Классика включена для всех профилей.${plain}"
+      echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+      telemetry_notify
+      pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+# --- Размер клон-пакетов по профилям (clonesize.tsv) ---
+# Максимальный размер клон-пакета в режиме клонов; нет строки = без
+# пользовательского ограничения. Верхняя граница ТСПУ 1200 Б держится
+# системой всегда (режется любой TLS-фейк). Резка согласованная — контракт
+# «не больше лимита», точный размер недостижим (резка идёт группами
+# расширений). Меняется на лету, рестарт не нужен.
+
+clone_size_display() {
+  local v
+  v="$(clone_size_get "$1")"
+  if [ -n "$v" ]; then
+    echo "${v} Б"
+  else
+    echo "без ограничения"
+  fi
+}
+
+clone_size_small_warn() {
+  if [ "$1" -lt 300 ] 2>/dev/null; then
+    echo -e "${yellow}Внимание: при лимите ниже ~300 Б большие ClientHello${plain}"
+    echo -e "${yellow}не влезут даже после резки — клоны таких потоков откатятся на штатный блоб.${plain}"
+  fi
+  echo -e "${yellow}Подсказка: на стратегиях, где фейк шлётся кусками вместе с реальным${plain}"
+  echo -e "${yellow}CH (multisplit/fakeddisorder с блобом), резаный клон большого потока${plain}"
+  echo -e "${yellow}может валить поток — для клонов лучше цельно-фейковые стратегии${plain}"
+  echo -e "${yellow}(fake + repeats, сплит реального без блоба).${plain}"
+}
+
+clone_size_profile_pick() {
+  local profile="$1" title="$2" choice cur preset size i
+  local presets=()
+  while IFS= read -r preset; do presets+=("$preset"); done < <(clone_size_presets)
+  local custom_idx=$(( ${#presets[@]} + 2 ))
+
+  while true; do
+    clear -x
+    cur="$(clone_size_get "$profile")"
+    echo -e "${cyan}--- Профиль $profile ($title): максимальный размер клон-пакетов ---${plain}"
+    echo ""
+    if [ -n "$cur" ]; then
+      echo -e "${yellow}Сейчас: ${green}${cur} Б${plain}"
+    else
+      echo -e "${yellow}Сейчас: ${plain}${green}без ограничения${plain}"
+    fi
+    echo ""
+    submenu_item "1" "Без ограничения (сброс; границу ТСПУ 1200 Б держит система)"
+    i=2
+    for preset in "${presets[@]}"; do
+      submenu_item "$i" "Клоны не больше ${preset} Б"
+      i=$((i+1))
+    done
+    submenu_item "$custom_idx" "Свой размер (64..1200 Б)..."
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice
+    if [ "$choice" = "0" ] || [ -z "$choice" ]; then
+      return
+    elif [ "$choice" = "1" ]; then
+      if clone_size_clear "$profile"; then
+        echo -e "${green}Сброшено: клоны профиля $profile без пользовательского ограничения.${plain}"
+        echo -e "${yellow}Граница ТСПУ 1200 Б держится всегда. Применится сам в течение ~2 секунд.${plain}"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сбросить ограничение.${plain}"
+      fi
+      pause_enter
+    elif ui_is_number_in_range "$choice" 2 "$(( custom_idx - 1 ))"; then
+      preset="${presets[$((choice-2))]}"
+      if clone_size_set "$profile" "$preset"; then
+        echo -e "${green}Профиль $profile: клон-пакеты не больше ${preset} Б.${plain}"
+        echo -e "${yellow}Клоны больше лимита режутся согласованно (без post-quantum key_share);${plain}"
+        echo -e "${yellow}не влезло — штатный блоб конфига.${plain}"
+        echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+        clone_size_small_warn "$preset"
+        telemetry_notify
+      else
+        echo -e "${red}Не удалось сохранить ограничение.${plain}"
+      fi
+      pause_enter
+    elif [ "$choice" = "$custom_idx" ]; then
+      read -re -p "Размер в байтах (64..1200), 0 - отмена: " size
+      if [ "$size" = "0" ]; then
+        :
+      elif [ -n "$size" ] && clone_size_valid "$size"; then
+        if clone_size_set "$profile" "$size"; then
+          echo -e "${green}Профиль $profile: клон-пакеты не больше ${size} Б.${plain}"
+          echo -e "${yellow}Клоны больше лимита режутся согласованно (без post-quantum key_share);${plain}"
+        echo -e "${yellow}не влезло — штатный блоб конфига.${plain}"
+          echo -e "${yellow}Применится сам в течение ~2 секунд, рестарт не нужен.${plain}"
+          clone_size_small_warn "$size"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось сохранить ограничение.${plain}"
+        fi
+      else
+        echo -e "${red}Некорректный размер: целое число 64..1200 (байты).${plain}"
+      fi
+      pause_enter
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+clone_size_submenu() {
+  local p ans i idx v
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(clone_size_supported_profiles)
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- Размер клон-пакетов (лимит байт по профилям) ---${plain}"
+    echo ""
+    echo -e "${yellow}Действует в режиме клонов: клон отправляется только целым${plain}"
+    echo -e "${yellow}в пределах лимита; клоны больше лимита не шлются — штатный блоб.${plain}"
+    echo -e "${yellow}Нет строки = граница ТСПУ 1200 Б. Меняется на лету, рестарт не нужен.${plain}"
+    echo -e "${yellow}Меняется на лету, рестарт zapret2 не нужен.${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(clone_size_get "${profiles[$idx]}")"
+      if [ -n "$v" ]; then
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "${v} Б" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "без ограничения" yellow
+      fi
+      i=$((i+1))
+    done
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      clone_size_profile_pick "${profiles[$idx]}" "${titles[$idx]}"
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
 # --- Watchdog zapret2: включение/выключение (пункт 19-6) ---
-# Файлы докачиваются с репозитория при отсутствии (z2r_download_project_file),
+# Файлы докачиваются из репозитория при отсутствии (z2r_download_project_file),
 # поэтому в ветке они живут как исходники, а на роутере появляются по требованию.
 
 watchdog_entware_script() { printf '%s\n' "${ZATOR_ROOT:-/opt/zator}/z2r_lib/zapret2-watchdog"; }

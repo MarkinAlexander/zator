@@ -52,6 +52,8 @@ orch_profile_try() {
 
     echo "$title"
     echo "Текущее состояние: ${current_state/auto/def}"
+    # Общая точка входа всех меню подбора, включая Discord.
+    type show_hint >/dev/null 2>&1 && show_hint "$profile"
     local prompt_text="Введите номер стратегии 1-${max_strat} (0 - отключить профиль"
     if printf '%s' "$test_url" | grep -q '^https://'; then
         prompt_text="${prompt_text}, A - автопрогон"
@@ -442,6 +444,15 @@ orch_auto_sweep() {
         fi
     else
         echo -e " ${red}Рабочих стратегий не найдено.${plain}"
+        # YouTube весь красный — дело не в стратегиях: советуем перезагрузить
+        # роутер (просьба автора; только для цели YouTube)
+        case "$test_url" in
+            *youtube.com*)
+                if [ "$n_ok" = "0" ] && [ "$n_warn" = "0" ] && [ "$n_fail" -gt 0 ]; then
+                    z2r_youtube_reboot_advice
+                fi
+                ;;
+        esac
     fi
     if [ -n "$best_full" ] && [ "$best_full" != "$best" ]; then
         echo -e " Самая быстрая полная (TLS 1.2 и 1.3): ${Fgreen}${best_full}${plain} (${best_full_short})"
@@ -1179,27 +1190,91 @@ Strats_Tryer() {
 
   case "$mode_domain" in
     "1")
-      #вывод подсказки
-      show_hint "UDP"
       orch_profile_try "5" "Профиль 5: UDP 443 (QUIC)" "udp" ""
       ;;
     "2")
-      #вывод подсказки
-      show_hint "TCP"
       orch_profile_try "1" "Профиль 1: TCP 443 (YouTube)" "tls http" "https://www.youtube.com/"
       ;;
     "3")
-      #вывод подсказки
-      show_hint "GV"
       orch_profile_try "2" "Профиль 2: TCP 443 (Googlevideo)" "tls" "https://$(get_yt_cluster_domain)"
       ;;
     "4")
-      #вывод подсказки
-      show_hint "RKN"
-      orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://meduza.io"
+      if rkn_trial_domain_pick; then
+        orch_profile_try "3" "Профиль 3: TCP 443 (RKN)" "tls" "https://${RKN_TRIAL_DOMAIN}"
+      fi
       ;;
     *)
       manage_custom_rkn_domain "$mode_domain"
       ;;
   esac
+}
+
+# --- домен проверки для подбора профиля 3 (RKN) -----------------------------
+# Enter — базовый meduza.io; свой домен проверяется по РКН-спискам
+# (TCP_RKN_list.txt + TCP_Custom.txt; hostlist-семантика рантайма: сам домен
+# или родительский суффикс). Отсутствующего предлагаем добавить в
+# TCP_Custom.txt — тот же путь, что у суперавтопрогона. Результат —
+# в RKN_TRIAL_DOMAIN, rc!=0 = отмена подбора.
+
+RKN_TRIAL_DOMAIN_DEFAULT="meduza.io"
+
+rkn_list_has_domain() {
+    local domain="$1" f
+    for f in "${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_RKN_list.txt" \
+             "${ZATOR_ROOT:-/opt/zator}/extra_strats/TCP_Custom.txt"; do
+        [ -f "$f" ] || continue
+        if awk -v d="$domain" '
+            {
+                line = $0
+                sub(/\r$/, "", line)
+                gsub(/^[[:space:]]+/, "", line)
+                gsub(/[[:space:]]+$/, "", line)
+                if (line == "" || line ~ /^#/) next
+                if (line == d) { found = 1; exit }
+                dot = "." line
+                if (length(d) > length(dot) && substr(d, length(d) - length(dot) + 1) == dot) { found = 1; exit }
+            }
+            END { exit !found }
+        ' "$f" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+rkn_trial_domain_pick() {
+    local ans="" add_ans=""
+    clear -x
+    echo -e "${cyan}--- Домен проверки профиля 3 (RKN) ---${plain}"
+    echo -e "Enter — ${RKN_TRIAL_DOMAIN_DEFAULT} (базовый), свой домен или ссылка"
+    echo -e "(схема, порт и путь отбрасываются), 0 — отмена."
+    echo -e "Свой домен должен быть в РКН-списках; если его там нет — предложу добавить в TCP_Custom.txt."
+    read -re -p "Домен: " ans || ans=""
+    if [ "$ans" = "0" ]; then
+        echo "Отменено."
+        return 1
+    fi
+    if [ -z "$ans" ]; then
+        RKN_TRIAL_DOMAIN="$RKN_TRIAL_DOMAIN_DEFAULT"
+        return 0
+    fi
+    ans="$(z2r_normalize_domain "$ans" 2>/dev/null)" || {
+        echo -e "${red}Не удалось распознать домен. Пример: example.com или https://site.ru/path${plain}"
+        pause_enter
+        return 1
+    }
+    if rkn_list_has_domain "$ans"; then
+        echo -e "${green}Домен ${ans} найден в РКН-списках.${plain}"
+        RKN_TRIAL_DOMAIN="$ans"
+        return 0
+    fi
+    echo -e "${yellow}Домена ${ans} нет в РКН-списках — профиль 3 не будет его обрабатывать.${plain}"
+    read -re -p "Добавить в TCP_Custom.txt и продолжить? (1 - да, 0/Enter - отмена): " add_ans || add_ans=""
+    if [ "$add_ans" = "1" ]; then
+        domain_list_add "$(custom_rkn_file)" "$ans" "РКН-список (TCP_Custom.txt)" "Домен"
+        RKN_TRIAL_DOMAIN="$ans"
+        return 0
+    fi
+    echo "Отменено."
+    return 1
 }

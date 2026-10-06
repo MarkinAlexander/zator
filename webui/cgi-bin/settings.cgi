@@ -41,6 +41,9 @@ case "${REQUEST_METHOD:-GET}" in
       provider)
         api_provider_get
         ;;
+      recommendations)
+        api_recommendations_get
+        ;;
       update_check)
         api_update_check
         ;;
@@ -57,6 +60,12 @@ case "${REQUEST_METHOD:-GET}" in
         ;;
       tls_blob_profile)
         api_tls_blob_profile_set
+        ;;
+      fake_mode)
+        api_fake_mode_set
+        ;;
+      clone_size)
+        api_clone_size_set
         ;;
       wg_blob)
         api_wg_blob_set
