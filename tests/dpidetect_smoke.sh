@@ -108,12 +108,12 @@ for f in lib/dpidetect.sh lib/netcheck.sh lib/submenus.sh z2r.sh; do
 done
 
 # ---- статическая разводка ----
-grep -q 'strategies.sh dpidetect.sh submenus.sh' "$REPO_DIR/z2r.sh" \
+grep '^Z2R_LIB_FILES=' "$REPO_DIR/z2r.sh" | grep -q 'dpidetect.sh' \
   || fail "z2r.sh: dpidetect.sh не подключён в Z2R_LIB_FILES"
-grep -q 'submenu_item "12" "Диагностика: домен ломает DPI или обход?"' "$REPO_DIR/lib/submenus.sh" \
-  || fail "submenus.sh: нет пункта 12 в подменю стратегий"
-grep -q '"12")' "$REPO_DIR/lib/submenus.sh" && grep -q 'dpidetect_menu' "$REPO_DIR/lib/submenus.sh" \
-  || fail "submenus.sh: пункт 12 не вызывает dpidetect_menu"
+grep -q 'submenu_item "13" "Диагностика: домен ломает DPI или обход?"' "$REPO_DIR/lib/submenus.sh" \
+  || fail "submenus.sh: нет пункта 13 в подменю стратегий"
+grep -q '"13")' "$REPO_DIR/lib/submenus.sh" && grep -q 'dpidetect_menu' "$REPO_DIR/lib/submenus.sh" \
+  || fail "submenus.sh: пункт 13 не вызывает dpidetect_menu"
 grep -q 'submenu_item "9" "Кто сломал домен? (DPI или обход)"' "$REPO_DIR/lib/submenus.sh" \
   || fail "submenus.sh: нет пункта 9 (диагностика) в управлении доменами"
 grep -q 'dpidetect_domain_ask' "$REPO_DIR/lib/submenus.sh" \
