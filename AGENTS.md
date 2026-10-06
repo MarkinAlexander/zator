@@ -242,16 +242,17 @@ Minimum validation after edits:
 
 ## Smoke tests
 
-Единый раннер для человека и агентов — `tests/run.sh`. Режимы: `quick`
-(~5с: `bash -n` всех shell/lua + дешёвые статические тесты — после любой
-правки), `shell` (~2.5мин: всё, что смотрит в z2r.sh/lib/config.default,
-кроме тяжёлых webui/supersweep/tls), `webui` (~40с), `full` (весь набор
-параллельно, стенка ~7мин). Вывод — стабильный машинный контракт:
-строки `OK/FAIL <имя> <сек>` (у FAIL — до 8 последних строк вывода,
-`-v` отключает усечение) и итоговая `RUNNER: mode=... pass=N fail=M
-elapsed=...`; код возврата 0 только при полном проходе. Параллелизм —
-`RUNNER_JOBS` (по умолчанию 4). Тесты изолированы во временных каталогах
-`/tmp` и безопасно бегут одновременно.
+Single runner for humans and agents — `tests/run.sh`. Modes: `quick`
+(~5s: `bash -n` over all shell files + the cheapest static tests — run
+after any edit), `shell` (~2.5min: everything touching
+z2r.sh/lib/config.default except the heavy webui/supersweep/tls ones),
+`webui` (~40s), `full` (the whole suite in parallel, ~7min wall).
+Output is a stable machine contract: `OK/FAIL <name> <sec>` lines (FAIL
+prints up to 8 tail lines of the test output; `-v` disables truncation)
+and a final `RUNNER: mode=... pass=N fail=M elapsed=...` line; exit code
+0 only on a full pass. Parallelism via `RUNNER_JOBS` (default 4). Tests
+are isolated in their own `/tmp` directories and are safe to run
+concurrently.
 
 ```bash
 bash tests/profile_lock_smoke.sh
