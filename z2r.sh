@@ -1559,12 +1559,19 @@ z2r_ensure_gnu_tar() {
  local t
  t="$(z2r_pick_tar)"
  [ "$t" != "tar" ] && return 0
- command -v opkg >/dev/null 2>&1 || return 1
- echo -e "${yellow}tar системы не читает длинные имена архива — ставлю GNU tar через opkg...${plain}"
- opkg install tar >/dev/null 2>&1 || {
-  opkg update >/dev/null 2>&1
-  opkg install tar >/dev/null 2>&1
- }
+ if command -v opkg >/dev/null 2>&1; then
+  echo -e "${yellow}tar системы не читает длинные имена архива — ставлю GNU tar через opkg...${plain}"
+  opkg install tar >/dev/null 2>&1 || {
+   opkg update >/dev/null 2>&1
+   opkg install tar >/dev/null 2>&1
+  }
+ elif command -v apk >/dev/null 2>&1; then
+  echo -e "${yellow}tar системы не читает длинные имена архива — ставлю GNU tar через apk...${plain}"
+  apk update >/dev/null 2>&1 || true
+  apk add tar >/dev/null 2>&1 || true
+ else
+  return 1
+ fi
  t="$(z2r_pick_tar)"
  [ "$t" != "tar" ] && return 0
  echo -e "${yellow}GNU tar поставить не удалось.${plain}"
