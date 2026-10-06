@@ -1555,6 +1555,22 @@ z2r_validate_tar_archive() {
  return 0
 }
 
+z2r_ensure_gnu_tar() {
+ local t
+ t="$(z2r_pick_tar)"
+ [ "$t" != "tar" ] && return 0
+ command -v opkg >/dev/null 2>&1 || return 1
+ echo -e "${yellow}tar системы не читает длинные имена архива — ставлю GNU tar через opkg...${plain}"
+ opkg install tar >/dev/null 2>&1 || {
+  opkg update >/dev/null 2>&1
+  opkg install tar >/dev/null 2>&1
+ }
+ t="$(z2r_pick_tar)"
+ [ "$t" != "tar" ] && return 0
+ echo -e "${yellow}GNU tar поставить не удалось.${plain}"
+ return 1
+}
+
 z2r_archive_download_diagnose() {
  local archive="$1"
  local size tar_err tmp_hdr free_kb bad_entry
@@ -1619,8 +1635,17 @@ zapret_get() {
      echo -e "${red}Архив zapret2 повреждён или содержит небезопасные пути: $tarfile.${plain}"
      z2r_archive_download_diagnose "$archive"
      rm -f "$archive"
-     if [ -z "${ZAPRET2_ARCHIVE_DIR:-}" ] \
-        && z2r_download_zapret2_release "$archive" "$VER" "$tarfile" \
+     z2r_ensure_gnu_tar || true
+     if [ -n "${ZAPRET2_ARCHIVE_DIR:-}" ]; then
+         if cp -f "$bundled_archive" "$archive" 2>/dev/null \
+            && z2r_validate_tar_archive "$archive"; then
+             echo -e "${green}После установки GNU tar архив прошёл проверку — продолжаю.${plain}"
+         else
+             rm -f "$archive"
+             echo -e "${yellow}Локальный архив не читается: opkg update && opkg install tar — и повторите установку.${plain}"
+             return 1
+         fi
+     elif z2r_download_zapret2_release "$archive" "$VER" "$tarfile" \
         && z2r_validate_tar_archive "$archive"; then
          echo -e "${green}Повторная загрузка прошла проверку — продолжаю.${plain}"
      elif command -v unzip >/dev/null 2>&1 \
