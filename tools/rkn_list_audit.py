@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """Аудит hostlist-файлов zator: дубли, тени от других списков, базовые домены,
-семейства похожих корней, кандидаты в substring-лист.
+семейства похожих корней, словарь ключевых слов, кандидаты в substring-лист,
+генерация xlsx-отчёта.
 
 Usage:
   python tools/rkn_list_audit.py [--repo .] [--out-dir rkn_audit]
       [--fuzzy] [--search СТРОКА] [--min-family 3] [--substring-file FILE]
+      [--exclude casino,bet,...] [--xlsx]
 
-  --fuzzy       включить нечёткую кластеризацию (нужен pip install rapidfuzz,
-                без него — только контейнмент/префиксные семейства)
-  --search X    показать все домены листа, содержащие X, и их семейство
-  --out-dir     куда писать детальные файлы (по умолчанию rkn_audit/)
+  --fuzzy       нечёткие пары в отчёт (нужен rapidfuzz, без него difflib)
+  --search X    домены листа, содержащие X (дефисы/подчёркивания игнорируются)
+  --exclude     подстроки-фильтры: семейства и ключевые слова с ними уходят
+                в excluded-отчёт (мусорные темы типа casino)
+  --xlsx        собрать report.xlsx (нужен openpyxl)
+
+Опциональные зависимости: rapidfuzz, pyahocorasick, openpyxl, english-words.
+Без них работает всё, кроме ускорений и xlsx.
 
 Выход: сводка в stdout + файлы в out-dir:
   duplicates.txt, shadowed.txt, base_groups.tsv, families.tsv,
-  substring_candidates.txt
+  fuzzy_pairs.txt, keywords.tsv, substring_candidates.txt, report.xlsx
 """
 
 import argparse
@@ -41,8 +47,10 @@ MULTIPART_TLDS = {
     "co.in", "co.il", "co.za", "com.pl", "com.my", "co.id",
     "com.ph", "com.vn", "com.eg", "com.sa", "com.pk", "com.kz",
     "com.ru", "net.ru", "org.ru", "pp.ru", "msk.ru", "spb.ru",
-    "net.ua", "kiev.ua",
+    "kiev.ua",
 }
+SUFFIX_LIKE = re.compile(r"\.(com|net|org|gov|edu|ru|ua|uk|co|info|biz|online|store|site|pro|buzz|top|xyz|market|me)\.?$")
+
 
 def load_list(path):
     items, bad = [], []
@@ -61,9 +69,11 @@ def load_list(path):
                 bad.append(s)
     return items, bad
 
+
 def ancestors(d):
     parts = d.split(".")
     return [".".join(parts[i:]) for i in range(1, len(parts))]
+
 
 def registrable(d):
     parts = d.split(".")
@@ -71,39 +81,41 @@ def registrable(d):
         return ".".join(parts[-3:])
     return ".".join(parts[-2:])
 
+
 def core(d):
     base = registrable(d)
     return base.rsplit(".", 1)[0] if base.count(".") >= 1 else base
 
+
+def norm_core(c):
+    return c.replace("-", "").replace("_", "")
+
+
+def ngrams(s, n=6):
+    return {s[i:i + n] for i in range(len(s) - n + 1)}
+
+
 class UnionFind:
     def __init__(self):
         self.p = {}
+
     def find(self, x):
         self.p.setdefault(x, x)
         while self.p[x] != x:
             self.p[x] = self.p[self.p[x]]
             x = self.p[x]
         return x
+
     def union(self, a, b):
         ra, rb = self.find(a), self.find(b)
         if ra != rb:
             self.p[rb] = ra
 
-def ngrams(s, n=5):
-    return {s[i:i+n] for i in range(len(s) - n + 1)}
-
-def norm_core(c):
-    return c.replace("-", "").replace("_", "")
-
-def norm_core(c):
-    return c.replace("-", "").replace("_", "")
 
 def build_families(uniq_cores, fuzzy=False, min_len=6, max_core_len=24):
-    """Семейства = контейнмент: ядро A входит в ядро B -> A корень семейства.
-    Ищем для каждого ядра самый короткий существующий корень за один проход
-    по индексу коротких ядер. Fuzzy-пары (rapidfuzz/difflib) не склеиваются,
-    а идут отдельным отчётом: транзитивное замыкание по ratio сливает всё
-    в одну кучу."""
+    """Семейства = контейнмент: короткое ядро входит в длинное -> корень.
+    Fuzzy-пары не склеиваются (транзитивное замыкание сливает всё в кучу),
+    а идут отдельным отчётом."""
     norm_of = {c: norm_core(c) for c in uniq_cores}
     norm_index = defaultdict(list)
     for c, n in norm_of.items():
@@ -115,7 +127,7 @@ def build_families(uniq_cores, fuzzy=False, min_len=6, max_core_len=24):
         ln = len(n)
         for L in range(min_len, min(ln, max_core_len) + 1):
             for i in range(ln - L + 1):
-                hit = norm_index.get(n[i:i+L])
+                hit = norm_index.get(n[i:i + L])
                 if hit:
                     best = hit[0]
                     break
@@ -130,35 +142,57 @@ def build_families(uniq_cores, fuzzy=False, min_len=6, max_core_len=24):
             from rapidfuzz import fuzz as rf
         except ImportError:
             print("[!] rapidfuzz не установлен (--fuzzy пропущен): pip install rapidfuzz", file=sys.stderr)
-        buckets = defaultdict(list)
-        for c, n in norm_of.items():
-            if len(n) < min_len:
-                continue
-            for g in ngrams(n, min_len):
-                if len(buckets[g]) <= 20:
-                    buckets[g].append(c)
-        pairs = set()
-        for g, items in sorted(buckets.items()):
-            if len(items) < 2:
-                continue
-            items = sorted(set(items))
-            for i in range(len(items)):
-                for j in range(i + 1, len(items)):
-                    pairs.add((items[i], items[j]))
-            if len(pairs) > 300000:
-                print("[!] fuzzy-пар слишком много, срез по 300k", file=sys.stderr)
-                break
-        import difflib
-        for a, b in pairs:
-            na, nb = norm_of[a], norm_of[b]
-            if na in nb or nb in na:
-                continue
-            ratio = rf.ratio(na, nb) if rf is not None else (
-                difflib.SequenceMatcher(None, na, nb).ratio() * 100
-                if abs(len(na) - len(nb)) <= 3 else 0)
-            if ratio >= 87:
-                fuzzy_pairs.append((round(ratio), a, b))
+            rf = None
+        if rf is not None:
+            buckets = defaultdict(list)
+            for c, n in norm_of.items():
+                if len(n) < min_len:
+                    continue
+                for g in ngrams(n, min_len):
+                    if len(buckets[g]) <= 20:
+                        buckets[g].append(c)
+            pairs = set()
+            for g, items in sorted(buckets.items()):
+                if len(items) < 2:
+                    continue
+                items = sorted(set(items))
+                for i in range(len(items)):
+                    for j in range(i + 1, len(items)):
+                        pairs.add((items[i], items[j]))
+                if len(pairs) > 300000:
+                    print("[!] fuzzy-пар слишком много, срез по 300k", file=sys.stderr)
+                    break
+            for a, b in pairs:
+                na, nb = norm_of[a], norm_of[b]
+                if na in nb or nb in na:
+                    continue
+                if rf.ratio(na, nb) >= 87:
+                    fuzzy_pairs.append((round(rf.ratio(na, nb)), a, b))
     return uf, fuzzy_pairs
+
+
+def literal_stem(domains, min_len=6):
+    """Самая длинная буквальная подстрока, общая для всех доменов:
+    substring-матчинг в nfqws2 буквальный, auto-prava не ловится стемом
+    autoprava, но ловится стемом prava."""
+    regs = sorted(set(domains), key=len)
+    a0 = regs[0]
+    best = ""
+    seen = set()
+    for i in range(len(a0) - min_len + 1):
+        for j in range(i + min_len, len(a0) + 1):
+            s = a0[i:j]
+            if s in seen:
+                continue
+            seen.add(s)
+            if all(s in d for d in regs) and len(s) > len(best):
+                best = s
+    return best
+
+
+def tokens_of(core_name):
+    return [t for t in re.split(r"[^a-z]+", core_name) if len(t) >= 4]
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -167,7 +201,11 @@ def main():
     ap.add_argument("--search", default=None)
     ap.add_argument("--min-family", type=int, default=3)
     ap.add_argument("--substring-file", default=None)
+    ap.add_argument("--exclude", default="",
+                    help="подстроки-фильтры через запятую (casino,bet,porno,...)")
+    ap.add_argument("--xlsx", action="store_true")
     args = ap.parse_args()
+    excludes = [x.strip().lower() for x in args.exclude.split(",") if x.strip()]
 
     rkn, rkn_bad = load_list(RKN)
     yt = []
@@ -185,6 +223,8 @@ def main():
     print(f"RKN: {len(rkn)} строк ({len(rkn_set)} уникальных, {len(rkn)-len(rkn_set)} дублей-строк)"
           f"{', не-домены: %d' % len(rkn_bad) if rkn_bad else ''}")
     print(f"YT: {len(yt_set)} баз, Discord: {len(discord_set)}, Custom: {len(custom_set)}")
+    if excludes:
+        print(f"Фильтры исключения: {excludes}")
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -193,7 +233,7 @@ def main():
     with open(os.path.join(args.out_dir, "duplicates.txt"), "w", encoding="utf-8") as f:
         for d, c in sorted(dups.items()):
             f.write(f"{c}\t{d}\n")
-    print(f"\n[1] Точные дубли: {len(dups)} (файл duplicates.txt)")
+    print(f"\n[1] Точные дубли: {len(dups)}")
 
     shadow_exact, shadow_parent = [], []
     for d in rkn_set:
@@ -203,9 +243,6 @@ def main():
             shadow_exact.append((d, "discord"))
         elif d in custom_set:
             shadow_exact.append((d, "custom"))
-    yt_anc = set()
-    for d in yt_set:
-        yt_anc.update(ancestors(d))
     for d in rkn_set:
         for a in ancestors(d):
             if a in yt_set:
@@ -219,17 +256,18 @@ def main():
             f.write(f"exact\t{w}\t{d}\n")
         for d, a, w in shadow_parent:
             f.write(f"parent\t{w}\t{d}\t# база {a} в списке {w}\n")
-    print(f"[2] Тени: {len(shadow_exact)} точных совпадений + {len(shadow_parent)} поддоменов чужих баз (shadowed.txt)")
+    print(f"[2] Тени: {len(shadow_exact)} точных + {len(shadow_parent)} поддоменов чужих баз")
 
-    bases = defaultdict(list)
+    doms_by_base = defaultdict(list)
     for d in rkn_set:
-        bases[registrable(d)].append(d)
-    multi = sorted(((b, ds) for b, ds in bases.items() if len(ds) >= 3),
+        doms_by_base[registrable(d)].append(d)
+    bases = set(doms_by_base)
+    multi = sorted(((b, ds) for b, ds in doms_by_base.items() if len(ds) >= 3),
                    key=lambda x: -len(x[1]))
     with open(os.path.join(args.out_dir, "base_groups.tsv"), "w", encoding="utf-8") as f:
         for b, ds in multi:
             f.write(f"{len(ds)}\t{b}\t{' '.join(sorted(ds))}\n")
-    print(f"[3] Баз с 3+ поддоменами: {len(multi)} (base_groups.tsv); топ-5:")
+    print(f"[3] Баз с 3+ поддоменами: {len(multi)}; топ-5:")
     for b, ds in multi[:5]:
         print(f"      {len(ds)}x {b}")
 
@@ -239,9 +277,6 @@ def main():
     core_members = defaultdict(list)
     for c in uniq_cores:
         core_members[uf.find(c)].append(c)
-    doms_by_base = defaultdict(list)
-    for d in rkn_set:
-        doms_by_base[registrable(d)].append(d)
     base_members = defaultdict(list)
     for b, c in core_by_base.items():
         base_members[uf.find(c)].append(b)
@@ -249,52 +284,35 @@ def main():
     for root, mem_bases in base_members.items():
         doms = sorted({d for b in mem_bases for d in doms_by_base.get(b, [])})
         if len(doms) >= args.min_family:
-            fam_domains.append((sorted(core_members[root]), doms))
+            fam_domains.append((root, sorted(core_members[root]), doms))
     fam_domains.sort(key=lambda x: -len(x[1]))
+    fam_excluded, fam_kept = [], []
+    for root, members, doms in fam_domains:
+        (fam_excluded if any(x in root for x in excludes) else fam_kept).append((root, members, doms))
     with open(os.path.join(args.out_dir, "families.tsv"), "w", encoding="utf-8") as f:
-        for members, doms in fam_domains:
+        for root, members, doms in fam_kept:
             f.write(f"{len(doms)}\t{'/'.join(members[:6])}\t{' '.join(doms)}\n")
-    print(f"[4] Семейств похожих корней (>= {args.min_family} доменов): {len(fam_domains)} (families.tsv); топ-5:")
-    for members, doms in fam_domains[:5]:
+    with open(os.path.join(args.out_dir, "families_excluded.tsv"), "w", encoding="utf-8") as f:
+        for root, members, doms in fam_excluded:
+            f.write(f"{len(doms)}\t{'/'.join(members[:6])}\t{' '.join(doms)}\n")
+    print(f"[4] Семейств (>= {args.min_family} доменов): {len(fam_kept)} + исключено фильтрами {len(fam_excluded)}; топ-5:")
+    for root, members, doms in fam_kept[:5]:
         print(f"      {len(doms)}x {' | '.join(members[:4])}")
     with open(os.path.join(args.out_dir, "fuzzy_pairs.txt"), "w", encoding="utf-8") as f:
         for ratio, a, b in sorted(fuzzy_pairs, reverse=True)[:300]:
             f.write(f"{ratio}\t{a}\t{b}\n")
-    print(f"     fuzzy-пары (не склеены, отчёт отдельно): {len(fuzzy_pairs)}")
+    print(f"     fuzzy-пары (не склеены): {len(fuzzy_pairs)}")
 
-    covered = []
-    if substrings:
-        covered = [d for d in rkn_set if any(s in d for s in substrings)]
-
-    def literal_stem(domains, min_len=6):
-        """Самая длинная буквальная подстрока, общая для всех доменов:
-        substring-матчинг в nfqws2 буквальный, auto-prava не ловится стемом
-        autoprava, но ловится стемом prava."""
-        regs = sorted(set(domains), key=len)
-        a0 = regs[0]
-        best = ""
-        seen = set()
-        for i in range(len(a0) - min_len + 1):
-            for j in range(i + min_len, len(a0) + 1):
-                s = a0[i:j]
-                if s in seen:
-                    continue
-                seen.add(s)
-                if all(s in d for d in regs) and len(s) > len(best):
-                    best = s
-        return best
+    covered_by_existing = set(substrings)
 
     stem_variants = {}
-    for members, doms in fam_domains:
+    for root, members, doms in fam_kept:
         if len(doms) < 5:
             continue
         stem = literal_stem(doms)
-        if not stem:
+        if not stem or any(x in stem for x in excludes):
             continue
-        variants = {stem}
-        for s in (stem[1:], stem[:-1], stem[1:-1]):
-            if len(s) >= 6:
-                variants.add(s)
+        variants = {stem} | {s for s in (stem[1:], stem[:-1]) if len(s) >= 6}
         for v in variants:
             stem_variants.setdefault(v, set()).add(stem)
 
@@ -310,7 +328,7 @@ def main():
         for d in rkn_set:
             for _, s in A.iter(d):
                 cnt[s] += 1
-                if len(hit_lists[s]) <= 40:
+                if len(hit_lists[s]) <= 25:
                     hit_lists[s].append(d)
     except ImportError:
         print("[!] pyahocorasick не установлен, медленный подсчёт: pip install pyahocorasick", file=sys.stderr)
@@ -318,31 +336,77 @@ def main():
             for s in stems:
                 if s in d:
                     cnt[s] += 1
-                    if len(hit_lists[s]) <= 40:
+                    if len(hit_lists[s]) <= 25:
                         hit_lists[s].append(d)
 
-    covered_by_existing = set()
-    if substrings:
-        covered_by_existing = {s for s in stems if any(x in s for x in substrings)}
     candidates = []
     for base_stem in {x for vs in stem_variants.values() for x in vs}:
-        rows = [(cnt[s], s) for s in stems if base_stem in stem_variants.get(s, set())]
-        rows = [r for r in rows if not any(x in r[1] for x in covered_by_existing)]
+        rows = [(cnt[s], s) for s in stems
+                if base_stem in stem_variants.get(s, set())
+                and not any(x in s for x in covered_by_existing)]
         if not rows:
             continue
-        rows.sort(reverse=True)
-        candidates.append((rows[0][0], base_stem, rows))
+        rows.sort(key=lambda r: (-len(r[1]), -r[0]))
+        informative = []
+        prev = None
+        for n, s in rows:
+            if prev is None or n > prev:
+                informative.append((n, s))
+                prev = n
+        if informative:
+            candidates.append((informative[0][0], base_stem, informative))
     candidates.sort(reverse=True)
+    cand_excluded = [c for c in candidates if any(x in c[1] for x in excludes)]
+    cand_kept = [c for c in candidates if not any(x in c[1] for x in excludes)]
     with open(os.path.join(args.out_dir, "substring_candidates.txt"), "w", encoding="utf-8") as f:
-        for _, base_stem, rows in candidates:
+        for _, base_stem, rows in cand_kept:
+            for n, s in rows:
+                flag = "\t!!! суффикс-подобный, в подстроки не добавлять" if SUFFIX_LIKE.search(s) else ""
+                f.write(f"{s}\tпокрывает {n}\tсемейство '{base_stem}'\t{' '.join(hit_lists[s])}{flag}\n")
+            f.write("\n")
+    with open(os.path.join(args.out_dir, "substring_candidates_excluded.txt"), "w", encoding="utf-8") as f:
+        for _, base_stem, rows in cand_excluded:
             for n, s in rows:
                 f.write(f"{s}\tпокрывает {n}\tсемейство '{base_stem}'\t{' '.join(hit_lists[s])}\n")
             f.write("\n")
-    print(f"[5] Кандидатов в substring-лист: {len(candidates)} семейств (substring_candidates.txt, букве в букву); топ-5:")
-    for _, base_stem, rows in candidates[:5]:
+    print(f"[5] Кандидатов в substring-лист: {len(cand_kept)} семейств"
+          f" (+{len(cand_excluded)} отфильтровано); топ-5:")
+    for _, base_stem, rows in cand_kept[:5]:
         top = " / ".join(f"'{s}'={n}" for n, s in rows[:3])
         print(f"      семейство '{base_stem}': {top}")
-    print("      (для каждого семейства: точный стем и расширенные варианты с покрытием по всему листу)")
+
+    eng = set()
+    try:
+        from english_words import get_english_words_set
+        eng = {w.lower() for w in get_english_words_set(["web2"], lower=True)}
+    except ImportError:
+        print("[!] english-words не установлен — колонка 'english' пустует: pip install english-words", file=sys.stderr)
+    kw_counter = Counter()
+    kw_examples = defaultdict(list)
+    for b, c in core_by_base.items():
+        for t in tokens_of(c):
+            kw_counter[t] += 1
+            if len(kw_examples[t]) < 12:
+                kw_examples[t].append(doms_by_base[b][0])
+    kw_rows, kw_excluded = [], []
+    for t, n in kw_counter.most_common():
+        row = (t, n, "yes" if (eng and t in eng) else "", " ".join(kw_examples[t][:8]))
+        if excludes and any(x in t for x in excludes):
+            kw_excluded.append(row)
+        else:
+            kw_rows.append(row)
+    with open(os.path.join(args.out_dir, "keywords.tsv"), "w", encoding="utf-8") as f:
+        f.write("keyword\tbases\tenglish\texamples\n")
+        for t, n, e, ex in kw_rows:
+            f.write(f"{t}\t{n}\t{e}\t{ex}\n")
+    with open(os.path.join(args.out_dir, "keywords_excluded.tsv"), "w", encoding="utf-8") as f:
+        f.write("keyword\tbases\tenglish\texamples\n")
+        for t, n, e, ex in kw_excluded:
+            f.write(f"{t}\t{n}\t{e}\t{ex}\n")
+    print(f"[6] Ключевых слов: {len(kw_rows)} (+{len(kw_excluded)} отфильтровано); английских: "
+          f"{sum(1 for r in kw_rows if r[2])}; топ-10:")
+    for t, n, e, _ in kw_rows[:10]:
+        print(f"      {t} = {n}{' *' if e else ''}")
 
     if args.search:
         q = args.search.lower().replace("-", "").replace("_", "")
@@ -352,6 +416,60 @@ def main():
             print(f"  {d}")
         if len(hits) > 60:
             print(f"  ... и ещё {len(hits)-60}")
+
+    if args.xlsx:
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            print("[!] openpyxl не установлен: pip install openpyxl", file=sys.stderr)
+            return
+        wb = Workbook()
+        hdr = Font(bold=True)
+
+        def sheet(name, header, rows, widths):
+            ws = wb.create_sheet(name)
+            ws.append(list(header))
+            for c in ws[1]:
+                c.font = hdr
+            for r in rows:
+                ws.append(list(r))
+            for i, w in enumerate(widths, 1):
+                ws.column_dimensions[get_column_letter(i)].width = w
+            ws.freeze_panes = "A2"
+            return ws
+
+        ws = wb.active
+        ws.title = "Summary"
+        for k, v in [
+            ("RKN строк", len(rkn)), ("уникальных", len(rkn_set)), ("дублей", len(dups)),
+            ("теней точных", len(shadow_exact)), ("теней-поддоменов", len(shadow_parent)),
+            ("баз с 3+ поддоменами", len(multi)),
+            ("семейств", len(fam_kept)), ("семейств отфильтровано", len(fam_excluded)),
+            ("substring-кандидатов", len(cand_kept)), ("ключевых слов", len(kw_rows)),
+        ]:
+            ws.append([k, v])
+        ws.column_dimensions["A"].width = 28
+
+        sheet("Duplicates", ("count", "domain"), sorted(dups.items()), [8, 40])
+        sheet("Shadowed", ("type", "list", "domain", "note"),
+              [(t, w, d, "") for d, w in shadow_exact] + [(t, w, d, f"база {a}") for d, a, w in shadow_parent],
+              [8, 10, 42, 24])
+        sheet("BaseGroups", ("subdomains", "base", "domains"),
+              [(len(ds), b, " ".join(sorted(ds))) for b, ds in multi], [11, 24, 120])
+        sheet("Families", ("domains", "cores", "all_domains"),
+              [(len(d), "/".join(m[:6]), " ".join(d)) for r, m, d in fam_kept], [9, 40, 120])
+        sheet("SubstringCandidates", ("stem", "coverage", "family", "sample_domains"),
+              [(s, n, fam, " ".join(hit_lists[s][:25]))
+               for _, fam, rows in cand_kept for n, s in rows], [20, 10, 24, 100])
+        sheet("Keywords", ("keyword", "bases", "english", "examples"),
+              kw_rows, [20, 8, 9, 80])
+        sheet("ExcludedKeywords", ("keyword", "bases", "english", "examples"),
+              kw_excluded, [20, 8, 9, 80])
+        wb.save(os.path.join(args.out_dir, "report.xlsx"))
+        print(f"\nXLSX: {os.path.join(args.out_dir, 'report.xlsx')}")
+
 
 if __name__ == "__main__":
     main()
