@@ -35,4 +35,16 @@ local function adapt(name, ver)
   end
 end
 
-adapt("fake_default_tls", 0x0303)
+-- ЭКСПЕРИМЕНТ 2026-10-30 (googlevideo): адаптация версии TLS-записи встроенного
+-- блоба fake_default_tls 0x0301 -> 0x0303 по умолчанию ОТКЛЮЧЕНА — проверяем
+-- гипотезу, что патченный третий байт (01 -> 03) портит нестабильную выдачу
+-- googlevideo (задержки 6-7 сек). Вернуть прежнее поведение:
+--   touch /opt/zator/extra_strats/cache/fake_adapt_on && рестарт zapret2
+local fap = io.open("/opt/zator/extra_strats/cache/fake_adapt_on")
+if fap then
+  fap:close()
+  logf("flag fake_adapt_on: адаптация 0301 -> 0303 включена")
+  adapt("fake_default_tls", 0x0303)
+else
+  logf("эксперимент: адаптация 0301 -> 0303 ОТКЛЮЧЕНА, fake_default_tls отдаётся как есть (0301)")
+end
