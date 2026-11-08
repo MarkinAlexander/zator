@@ -2791,13 +2791,6 @@ else
     echo -e "${red}Не был получен доступ к api.github.com (таймаут 30 сек). Возможны проблемы при установке.${plain}"
 	if [ "$hardware" = "keenetic" ]; then
 		echo "Добавляем ip с от DNS 1.1.1.1 к api.github.com и пытаемся снова"
-		# nslookup бывает двух форматов: busybox "Address 1: x.x.x.x" и bind
-		# (Entware /opt/bin/nslookup) "Address: x.x.x.x" — старый паттерн под
-		# busybox на bind-формате молча давал пустоту, и ndmc падал на
-		# "ip host api.github.com " (argument parse error), убивая установку
-		# под set -e. Паттерн ниже матчит оба формата, требует IPv4-похожий
-		# ответ (хотя бы одна точка) и берёт последнюю строку (ответ идёт
-		# после эха сервера); пусто — DNS 1.1.1.1 не ответил.
 		_gh_ip="$(nslookup api.github.com 1.1.1.1 2>/dev/null | sed -n 's/^Address[ 0-9]*: \([0-9][0-9.]*\.[0-9][0-9.]*\).*/\1/p' | tail -n1)"
 		if [ -n "$_gh_ip" ]; then
 			ndmc -c "ip host api.github.com $_gh_ip" || echo -e "${yellow}ndmc не принял ip host — продолжаю без него.${plain}"
