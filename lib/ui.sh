@@ -1,5 +1,18 @@
 # UI helpers
 
+# Атомарный приватный каталог в /tmp БЕЗ mktemp: на части Entware-установок
+# (Merlin, недоустановленный busybox) applet-симлинка mktemp нет, и любые
+# media/sweep-пути падали «command not found». mkdir сам резервирует имя.
+z2r_tmp_dir() {
+  local prefix="$1" d i=0
+  while [ "$i" -lt 32 ]; do
+    d="/tmp/${prefix}.$$.${RANDOM}${RANDOM}"
+    (umask 077; mkdir "$d") 2>/dev/null && { printf '%s\n' "$d"; return 0; }
+    i=$((i + 1))
+  done
+  return 1
+}
+
 pause_enter() {
   read -re -p "Enter для продолжения" _
 }

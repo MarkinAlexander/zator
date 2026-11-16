@@ -445,7 +445,7 @@ z2r_media_resolve() (
 # тогда резолвер (и JSON-парсер) не нужны — кеш строится из самого URL.
 z2r_media_prepare() {
     local status kind length mime host expire direct=0
-    Z2R_MEDIA_DIR=$(umask 077; mktemp -d /tmp/zator-media.XXXXXX) || return 1
+    Z2R_MEDIA_DIR=$(z2r_tmp_dir zator-media) || return 1
     Z2R_MEDIA_READY=0
     case "${Z2R_MEDIA_VIDEO_ID:-}" in
         https://*)

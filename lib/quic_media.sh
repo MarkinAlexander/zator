@@ -947,7 +947,7 @@ _z2r_quic_trial() (
         rm -f "$shared_lock/pid"; rmdir "$shared_lock" 2>/dev/null || true' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    Z2R_QUIC_SWEEP_DIR=$(umask 077; mktemp -d /tmp/z2r-quic-sweep.XXXXXX) || return 1
+    Z2R_QUIC_SWEEP_DIR=$(z2r_tmp_dir z2r-quic-sweep) || return 1
     Z2R_QUIC_CURL="$(z2r_quic_curl_detect 2>/dev/null)" || true
     if [ -z "$Z2R_QUIC_CURL" ]; then
         # Ручной подбор на живом терминале: предложить установить h3-curl,

@@ -319,7 +319,7 @@ orch_gv_trial() (
         rm -f "$shared_lock/pid"; rmdir "$shared_lock" 2>/dev/null || true' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    Z2R_SUPERSWEEP_DIR=$(umask 077; mktemp -d /tmp/zator-gv-trial.XXXXXX) || return 1
+    Z2R_SUPERSWEEP_DIR=$(z2r_tmp_dir zator-gv-trial) || return 1
     if type z2r_media_prepare >/dev/null 2>&1; then
         z2r_media_prepare || return 1
     else
