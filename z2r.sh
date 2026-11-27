@@ -501,6 +501,22 @@ if [ ! -f "$ORCH_DIR/sni_pool.tsv" ]; then
   fi
 fi
 
+# Дефолтная TLS-сигнатура (1/2/3/4/8 -> 03): создаём только когда файла нет
+# вовсе — «Не задано» у всех профилей оставляет файл (пусть пустой) и дефолт
+# не возвращается. Существующий файл чистится от устаревших значений (04).
+if [ ! -f "$ORCH_DIR/blob_vers.tsv" ]; then
+  if mkdir -p "$ORCH_DIR" && {
+    for _p in 1 2 3 4 8; do printf '%s\t03\n' "$_p" >> "$ORCH_DIR/blob_vers.tsv"; done
+  }; then
+    :
+  else
+    echo -e "${yellow}Не удалось создать дефолтную TLS-сигнатуру: $ORCH_DIR/blob_vers.tsv${plain}" >&2
+  fi
+else
+  awk -F '\t' 'NF==2 && ($2=="01"||$2=="02"||$2=="03"||$2=="orig"||$2=="alt")' "$ORCH_DIR/blob_vers.tsv" > "$ORCH_DIR/blob_vers.tsv.tmp" \
+    && mv -f "$ORCH_DIR/blob_vers.tsv.tmp" "$ORCH_DIR/blob_vers.tsv"
+fi
+
 # Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
 # из TCP_Custom.txt (старые обновления затирали список), возвращаются в список.
 if type custom_rkn_restore_from_locks >/dev/null 2>&1; then
@@ -3041,6 +3057,9 @@ while true; do
  # Выбор блобов (maxru + слоты z2r_prof_N) из blob_files.tsv — тоже переживает.
  if type blob_files_apply >/dev/null 2>&1; then
   blob_files_apply "$ZAPRET2_ROOT/config.default" || true
+ fi
+ if type blob_vers_apply_file >/dev/null 2>&1; then
+   blob_vers_apply_file "$ZAPRET2_ROOT/config.default" || true
  fi
 
  #Для x-wrt

@@ -106,6 +106,11 @@ assert_contains "$Z2R_SRC" 'tls_blob_submenu' "z2r.sh: п.16 не открыва
 assert_contains "$LIB_SH_SRC" 'api_tls_blob_profile_set' "_lib.sh нет api_tls_blob_profile_set"
 assert_contains "$LIB_SH_SRC" 'blob_override_file_valid' "api не валидирует файл"
 assert_contains "$LIB_SH_SRC" '"profile_blobs"' "GET не отдаёт profile_blobs"
+assert_contains "$LIB_SH_SRC" '_blob_custom_base_ok' "_lib.sh нет валидатора «Своих блобов» (custom_blob)"
+assert_contains "$LIB_SH_SRC" 'custom_blob/\*; do' "_lib.sh не добавляет custom_blob в списки блобов"
+assert_contains "$SUBMENUS_SRC" 'custom_blob/%s' "_tls_blob_list_files не добавляет «Свои блобы»"
+assert_contains "$ACTIONS_SRC" 'custom_blob/\$\(basename' "picker'ы блобов не показывают «Свои блобы»"
+assert_contains "$FAKE_SRV_SRC" '_scan_custom_blobs' "fake_router_server не отдаёт «Свои блобы»"
 assert_contains "$SETTINGS_CGI_SRC" 'tls_blob_profile' "settings.cgi не знает tls_blob_profile"
 
 assert_contains "$WEBUI_SRC_ALL" 'tls-blob-profile-form' "webui-src нет формы tls-blob-profile-form"
@@ -130,6 +135,18 @@ assert_contains "$FAKE_SRV_SRC" '"profile_blobs"' "fake_router_server не от�
   _pb_out="$(api_tls_blob_profile_blobs_json)"
   [ "$_pb_out" = '"1":"tls_clienthello_max_ru.bin","2":"fake_default_tls","3":"","4":"tls_clienthello_5.bin","5":"quic_5.bin","8":""' ] \
     || fail "api_tls_blob_profile_blobs_json: $_pb_out"
+  # «Свой блоб» в слоте: значение должно сохранять префикс custom_blob/ —
+  # иначе панель не сопоставит его с элементом available_blobs
+  ORCH_BLOB_FILE="$TMP_DIR/blob_override.parser2.tsv"
+  printf '1\tz2r_prof_1\n' > "$ORCH_BLOB_FILE"
+  cfg="$TMP_DIR/config.parser_custom"
+  tr -d '\r' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g" \
+    -e 's#--blob=z2r_prof_1:@/opt/zator/files/fake/tls_clienthello_max_ru.bin#--blob=z2r_prof_1:@/opt/zator/files/fake/custom_blob/my_fake.bin#' > "$cfg"
+  _pb_out="$(api_tls_blob_profile_blobs_json)"
+  case "$_pb_out" in
+    *'"1":"custom_blob/my_fake.bin"'*) ;;
+    *) fail "parser: префикс custom_blob потерян: $_pb_out" ;;
+  esac
 )
 
 assert_contains "$TUTORIAL_SRC" 'Блоб на профиль' "TUTORIAL §8 без раздела про профиль"
@@ -187,6 +204,29 @@ if blob_override_file_valid tls_missing.bin; then
   fail "file_valid: несуществующий файл не должен проходить"
 fi
 
+# «Свои блобы» (custom_blob/…): basename-паттерны не применяются — важны только
+# формат имени (как при загрузке) и существование файла
+mkdir -p "$Z2R_BLOB_FAKE_DIR/custom_blob"
+printf 'CB' > "$Z2R_BLOB_FAKE_DIR/custom_blob/my_fake.bin"
+printf 'CB2' > "$Z2R_BLOB_FAKE_DIR/custom_blob/my_udp_fake"
+blob_override_file_valid custom_blob/my_fake.bin || fail "file_valid: custom_blob должен проходить для TLS"
+blob_override_file_valid custom_blob/my_fake.bin 5 \
+  || fail "file_valid(5): custom_blob проходит без UDP-паттерна (осознанный выбор пользователя)"
+blob_override_file_valid custom_blob/my_udp_fake \
+  || fail "file_valid: custom_blob без расширения должен проходить"
+if blob_override_file_valid custom_blob/missing.bin; then
+  fail "file_valid: несуществующий custom_blob не должен проходить"
+fi
+if blob_override_file_valid custom_blob/../evil.bin; then
+  fail "file_valid: custom_blob/../ не должен проходить"
+fi
+if blob_override_file_valid custom_blob/sub/x.bin; then
+  fail "file_valid: подпуть внутри custom_blob не должен проходить"
+fi
+if blob_override_file_valid custom_blob/.hidden.bin; then
+  fail "file_valid: скрытый файл в custom_blob не должен проходить"
+fi
+
 # --- 2a. QUIC-профиль 5: слот, источники, файлы-кандидаты ---------------------
 
 blob_override_set 5 "$(blob_override_slot 5)" || fail "set профиль 5 (QUIC)"
@@ -234,6 +274,11 @@ blob_files_clear z2r_prof_1 || fail "blob_files_clear"
 [ -z "$(blob_files_get z2r_prof_1)" ] || fail "clear не удалил"
 if blob_files_set "bad name" x.bin 2>/dev/null; then fail "set принял имя с пробелом"; fi
 if blob_files_set maxru "../etc/passwd" 2>/dev/null; then fail "set принял путь"; fi
+blob_files_set z2r_prof_1 custom_blob/my_fake.bin || fail "set не принял custom_blob/<файл>"
+[ "$(blob_files_get z2r_prof_1)" = "custom_blob/my_fake.bin" ] || fail "get не вернул custom_blob путь"
+if blob_files_set z2r_prof_1 custom_blob/../evil.bin 2>/dev/null; then fail "set принял custom_blob/.."; fi
+if blob_files_set z2r_prof_1 custom_blob/sub/x.bin 2>/dev/null; then fail "set принял custom_blob подпуть"; fi
+blob_files_clear z2r_prof_1
 
 # tls_blob_profile_apply_file персистит выбор слота (CLI и WebUI共用)
 tls_blob_profile_apply_file "$CFG" 2 custom_tls.bin || fail "apply_file профиль 2"
@@ -284,6 +329,63 @@ blob_files_clear z2r_prof_3
 grep -v 'z2r_prof_8' "$CFG_FRESH" > "$TMP_DIR/no8" && mv -f "$TMP_DIR/no8" "$CFG_FRESH"
 blob_files_set z2r_prof_8 custom_tls.bin
 blob_files_apply "$CFG_FRESH" 2>>"$TMP_DIR/blobfiles2.err" || fail "apply без декларации rc!=0"
+
+# --- 5. «Свой блоб» в слоте (custom_blob/…) -----------------------------------
+# tls_blob_profile_apply_file пишет сабпуть, персист в blob_files.tsv хранит
+# custom_blob/<файл>, blob_files_apply восстанавливает его на свежем эталоне,
+# blob_override_get раскрывает слот в custom_blob/<файл> (панель сопоставляет
+# это значение с элементом available_blobs).
+tls_blob_profile_apply_file "$CFG" 1 custom_blob/my_fake.bin \
+  || fail "apply_file (custom_blob) rc!=0"
+grep -q -- '--blob=z2r_prof_1:@/opt/zator/files/fake/custom_blob/my_fake.bin' "$CFG" \
+  || fail "apply_file: custom_blob путь не записан в слот"
+[ "$(blob_files_get z2r_prof_1)" = "custom_blob/my_fake.bin" ] \
+  || fail "apply_file не персистил custom_blob выбор"
+blob_override_set 1 "$(blob_override_slot 1)"
+[ "$(blob_override_get 1 "$CFG")" = "custom_blob/my_fake.bin" ] \
+  || fail "get: слот с custom_blob должен раскрываться в custom_blob/<файл>"
+blob_override_clear 1
+blob_files_clear z2r_prof_1
+
+CFG_CUSTOM="$TMP_DIR/config.custom"
+tr -d '\r' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g" > "$CFG_CUSTOM"
+blob_files_set z2r_prof_4 custom_blob/my_fake.bin
+blob_files_apply "$CFG_CUSTOM" || fail "apply (custom_blob слот) rc!=0"
+grep -q -- '--blob=z2r_prof_4:@/opt/zator/files/fake/custom_blob/my_fake.bin' "$CFG_CUSTOM" \
+  || fail "apply: слот z2r_prof_4 не переписан на custom_blob"
+blob_files_clear z2r_prof_4
+
+# --- 6. Версия TLS-рекорда (blob_vers.tsv): патч-копии zver/ -------------------
+printf 'RECORDPAYLOAD' > "$Z2R_BLOB_FAKE_DIR/tls_vers_test.bin"
+mkdir -p "$ZAPRET2_ROOT/extra_strats/cache/fake_orig"
+printf 'ORIGRECORD' > "$ZAPRET2_ROOT/extra_strats/cache/fake_orig/tls_vers_test.bin"
+CFG_VERS="$TMP_DIR/config.vers"
+tr -d '' < "$REPO_DIR/config.default" | sed -e "s#/opt/zapret2#$ROOT#g"   -e 's#^--blob=z2r_prof_3:@[^ ]*#--blob=z2r_prof_3:@/opt/zator/files/fake/tls_vers_test.bin#' > "$CFG_VERS"
+blob_vers_set 3 05 2>/dev/null && fail "vers set принял 05"
+blob_vers_set abc 04 2>/dev/null && fail "vers set принял нечисловой профиль"
+blob_vers_set 3 04 2>/dev/null && fail "vers set принял 04 (nfqws2 отвергает запись > 03)"
+blob_vers_set 3 02 || fail "vers set не записал"
+[ "$(blob_vers_get 3)" = "02" ] || fail "vers get не читает"
+blob_vers_apply_file "$CFG_VERS" || fail "vers apply rc!=0"
+grep -q -- '--blob=z2r_prof_3:@/opt/zator/files/fake/zver/prof3_tls_vers_test.bin' "$CFG_VERS"   || fail "vers apply: декларация не указывает на zver-копию"
+[ "$(blob_override_name 3)" = "z2r_prof_3" ] || fail "vers apply не активировал слот"
+[ "$(blob_override_get 3 "$CFG_VERS")" = "tls_vers_test.bin" ]   || fail "vers: get должен показывать базовый файл, а не путь zver/"
+[ "$(head -c 3 "$Z2R_BLOB_FAKE_DIR/zver/prof3_tls_vers_test.bin" | od -A n -t x1 | tr -d ' 
+')" = "160302" ]   || fail "vers apply: 3-й байт копии не 02"
+m1="$(md5sum "$CFG_VERS" | cut -d' ' -f1)"
+blob_vers_apply_file "$CFG_VERS" || fail "vers apply повторный rc!=0"
+[ "$m1" = "$(md5sum "$CFG_VERS" | cut -d' ' -f1)" ] || fail "vers apply не идемпотентен"
+blob_vers_set 3 orig
+blob_vers_apply_file "$CFG_VERS" || fail "vers orig apply rc!=0"
+[ "$(head -c 3 "$Z2R_BLOB_FAKE_DIR/zver/prof3_tls_vers_test.bin" | od -A n -t x1 | tr -d ' 
+')" = "160301" ]   || fail "vers orig: копия не равна исходным байтам"
+blob_vers_clear 3
+blob_vers_apply_file "$CFG_VERS" || fail "vers clear apply rc!=0"
+grep -q -- '--blob=z2r_prof_3:@/opt/zator/files/fake/tls_vers_test.bin' "$CFG_VERS"   || fail "vers clear: декларация не вернулась на базовый файл"
+z2r_backup_state_files | grep -q '^extra_strats/cache/orchestra/blob_vers\.tsv$'   || fail "backup list не содержит blob_vers.tsv"
+
+grep -q "blob_vers.tsv" "$REPO_DIR/z2r.sh" \
+  || fail "z2r.sh не предзаполняет blob_vers.tsv (03 по умолчанию)"
 
 ls "$ORCH_DIR" | grep -q '\.tmp\.' && fail "остались .tmp файлы после blob_files"
 

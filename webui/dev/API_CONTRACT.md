@@ -393,8 +393,11 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
 {
   "current_mode": "maxru",            // maxru | fake_default_tls | mixed | "не определён"
   "current_blob": "tls_clienthello_1.bin",
-  "available_blobs": ["tls_clienthello_1.bin", "..."],
-  "quic_blobs": ["quic_google.bin", "discord_udp_1.bin", "..."],  // кандидаты профиля 5 (UDP)
+  "available_blobs": ["tls_clienthello_1.bin", "...", "custom_blob/my_fake.bin"],
+  // ^ «Свои блобы» (custom_blob/<файл>) из /opt/zator/files/fake/custom_blob —
+  //   любые имена (валидация при загрузке), basename-паттерны не применяются
+  "quic_blobs": ["quic_google.bin", "discord_udp_1.bin", "...", "custom_blob/my_udp.bin"],
+  // ^ кандидаты профиля 5 (UDP) + «Свои блобы»
   "profile_blobs": {                  // per-profile переопределения (blob_override.tsv, 1-5+8)
     "1": "",                          // "" = как глобальный
     "2": "tls_clienthello_5.bin",     // файл слота z2r_prof_2
@@ -414,6 +417,11 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
   "profile_sizes": {                  // лимит клонов по профилям (clonesize.tsv)
     "1": "",                          // "" = без ограничения (граница ТСПУ 1200 Б)
     "4": "964"                        // клоны профиля режутся до «не больше N Б»
+  },
+  "profile_vers": {                   // 3-й байт сигнатуры фейков (blob_vers.tsv)
+    "1": "",                          // "" = не задано (блоб 16 03 03, клон 16 03 03)
+    "2": "03",                        // 01|02|03 — явный байт (файловый блоб и клоны); 04 не поддерживается nfqws2
+    "8": "orig"                       // orig = исходные байты (без изменения)
   }
 }
 ```
@@ -424,11 +432,12 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
 {
   "current_blob": "wg_initial_fake_1.bin",
   "current_repeats": "10",            // строка; "" если стратегии WG нет в конфиге
-  "available_blobs": ["wg_initial_fake_1.bin", "wg_initial_fake_2.bin", "..."]
+  "available_blobs": ["wg_initial_fake_1.bin", "wg_initial_fake_2.bin", "...", "custom_blob/my_wg.bin"]
 }
 ```
 
-`available_blobs` — только файлы `wg_initial_fake_*` из `/opt/zapret2/files/fake`
+`available_blobs` — файлы `wg_initial_fake_*` из `/opt/zapret2/files/fake`
+плюс «Свои блобы» `custom_blob/<файл>`
 (как в [`menu_action_set_wg_blob`](../../lib/actions.sh:424)).
 
 **WireGuard state** (`GET /cgi-bin/settings.cgi?setting=wg_state`):
@@ -715,10 +724,11 @@ QUIC), `apply` назначает номера 101+ и вызывает штат
 
 | `setting` | параметры | Что делает |
 | --- | --- | --- |
-| `tls_blob` | `fake_default_tls` \| `tls_*.bin` \| `custom_tls.bin` | смена TLS-блоба: `fake_default_tls` — вернуться на встроенный (декларация `--blob=maxru:@...` сохраняется для обратного переключения); файл — активировать внешний (`fake_default_tls`→`maxru` в ссылках стратегий + замена пути, path-agnostic `zapret2\|zator`) |
-| `tls_blob_profile` | `profile=1\|2\|3\|4\|5\|8&value=""\|fake_default_tls\|<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена). Профиль 5 (QUIC): кандидаты — только UDP-блобы (`quic_*.bin\|discord_udp_*.bin\|wg_initial_fake_*.bin\|stun*.bin`), `fake_default_tls` — 400 |
+| `tls_blob` | `fake_default_tls` \| `tls_*.bin` \| `custom_tls.bin` \| `custom_blob/<файл>` | смена TLS-блоба: `fake_default_tls` — вернуться на встроенный (декларация `--blob=maxru:@...` сохраняется для обратного переключения); файл — активировать внешний (`fake_default_tls`→`maxru` в ссылках стратегий + замена пути, path-agnostic `zapret2\|zator`); `custom_blob/<файл>` — «Свой блоб» из `/opt/zator/files/fake/custom_blob` (basename-паттерны не применяются — валидация при загрузке) |
+| `tls_blob_profile` | `profile=1\|2\|3\|4\|5\|8&value=""\|fake_default_tls\|<файл>\|custom_blob/<файл>` | per-profile блоб: `""` — сброс к глобальному, `fake_default_tls` — встроенный (оба без рестарта, TTL-кэш locked.lua ~2с), файл — прописывается в декларацию слота `--blob=z2r_prof_N:@...` + строка `blob_override.tsv` (авто-рестарт, как глобальная смена). Профиль 5 (QUIC): кандидаты — только UDP-блобы (`quic_*.bin\|discord_udp_*.bin\|wg_initial_fake_*.bin\|stun*.bin`), `fake_default_tls` — 400. `custom_blob/<файл>` — «Свой блоб», принимается для любого профиля (формат имени проверяется, паттерны — нет) |
 | `fake_mode` | `profile=1\|2\|3\|4\|8&value=classic\|clone` | режим фейков профиля (mode_override.tsv): `classic` — сброс строки (штатные блобы конфига), `clone` — блоб `maxru\|fake_default_tls` строится в рантайме из ClientHello пользователя с невинным SNI (sni_override.tsv или www.google.com). Без рестарта, TTL-кэш locked.lua ~2с |
 | `clone_size` | `profile=1\|2\|3\|4\|8&value=""\|global\|<64..1200>` | лимит клон-пакетов профиля (clonesize.tsv): `""`/`global` — сброс (без ограничения, границу ТСПУ 1200 Б держит locked.lua), число — клоны режутся до «не больше N Б» согласованными группами расширений; резать не смогли — штатный блоб конфига. Без рестарта, TTL-кэш locked.lua ~2с |
+| `tls_blob_ver` | `profile=1|2|3|4|8|all&value=""|01|02|03|alt|orig` | 3-й байт сигнатуры фейков профиля (файловый блоб слота и клоны CH, включая SNI-пул): `""` — не задано (блоб 16 03 03, клон 16 03 03), `01|02|03|alt` — явный байт / чередование 02↔03, `orig` — исходные байты (без изменения), `all` — сразу всем TLS-профилям (перезаписывает индивидуальные); декларация слота переписывается на подготовленную копию `files/fake/zver/prof<N>_<файл>` + строка `blob_vers.tsv`, авто-рестарт |
 | `wg_blob` | `value=<wg_initial_fake_*>` | замена `--blob=fakewgblob:@.../<файл>` |
 | `wg_repeats` | `value=<2..99>` | замена `blob=fakewgblob:repeats=N` |
 | `wg_state` | `value=0\|1` | вкл/выкл стратегии WG (`--skip` перед `--filter-l7=wireguard`) |

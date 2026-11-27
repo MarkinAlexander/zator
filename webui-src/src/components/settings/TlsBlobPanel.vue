@@ -202,6 +202,70 @@ function sizeSubmitDisabled(id: string): boolean {
   return busyActive.value || (sizeSelected[id] ?? '') === savedSize(id)
 }
 
+const VERS_OPTIONS = [
+  { value: '01', label: 'Сигнатура 16 03 01 (так шлёт Windows)' },
+  { value: '02', label: 'Сигнатура 16 03 02' },
+  { value: '03', label: 'Сигнатура 16 03 03 (так шлют Android/Linux)' },
+  { value: 'alt', label: 'Чередование 02/03 (динамика)' },
+
+  { value: 'orig', label: 'Не изменяется (исходные байты)' },
+]
+
+const versSelected = reactive<Record<string, string>>({})
+const versAll = ref('')
+
+function savedVers(id: string): string {
+  return settings.value?.profile_vers?.[id] ?? ''
+}
+
+function versDisplay(id: string): string {
+  const v = savedVers(id)
+  if (!v) return 'не задано (как сейчас)'
+  if (v === 'orig') return 'не изменяется (исходные байты)'
+  if (v === 'alt') return 'чередование 02/03'
+  return `16 03 ${v}`
+}
+
+watch(settings, () => {
+  const saved = PROFILE_ITEMS.map(p => savedVers(p.id))
+  versAll.value = saved.every(v => v && v === saved[0]) ? saved[0] : ''
+  for (const p of PROFILE_ITEMS) {
+    versSelected[p.id] = savedVers(p.id)
+  }
+}, { immediate: true })
+
+function versSubmitDisabled(id: string): boolean {
+  return busyActive.value || (versSelected[id] ?? '') === savedVers(id)
+}
+
+const versAllDisabled = computed(() => busyActive.value || versAll.value === '')
+
+async function submitVers(id: string) {
+  const value = (versSelected[id] ?? '').trim()
+  try {
+    await withBusy(`tls-blob-vers-${id}`, async () => {
+      await applySetting.tls_blob_ver(id, value)
+      showToast('Сигнатура применена, zapret2 перезапущен.')
+      await refreshTlsBlobSettings()
+    })
+  } catch (error) {
+    showToast((error as Error).message, 'error')
+  }
+}
+
+async function submitVersAll() {
+  const value = (versAll.value ?? '').trim()
+  try {
+    await withBusy('tls-blob-vers-all', async () => {
+      await applySetting.tls_blob_ver('all', value)
+      showToast('Сигнатура применена ко всем профилям, zapret2 перезапущен.')
+      await refreshTlsBlobSettings()
+    })
+  } catch (error) {
+    showToast((error as Error).message, 'error')
+  }
+}
+
 async function submitSize(id: string) {
   let value = (sizeSelected[id] ?? '').trim()
   if (value === 'custom') {
@@ -364,6 +428,49 @@ async function submitSize(id: string) {
             :class="{ 'is-busy': busyButton === `clone-size-${p.id}` }"
             :disabled="sizeSubmitDisabled(p.id)"
             @click="submitSize(p.id)">Применить</button>
+        </div>
+      </template>
+    </form>
+  </section>
+  <section class="card">
+    <form id="tls-blob-vers-form" class="settings-form" @submit.prevent>
+      <h3>TLS-сигнатура фейков</h3>
+      <p class="panel-desc">
+        Третий байт сигнатуры у фейков профиля: файлового блоба слота и клона
+        ClientHello (включая SNI-пул). Android/Linux обычно шлют сигнатуру с
+        байтом 03, Windows — с 01; смена иногда помогает обойти ТСПУ. Штука
+        экспериментальная: «Не изменяется» — исходные байты пакета, «не задано» —
+        как сейчас. Панель перезапускает zapret2 сама.
+      </p>
+      <label>
+        <span>Для всех профилей</span>
+        <select id="tls-blob-vers-all" v-model="versAll" :disabled="busyActive">
+          <option value="">Не задано (как сейчас)</option>
+          <option v-for="opt in VERS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+        <div class="form-hint">Задаёт одну сигнатуру всем TLS-профилям,
+          перезаписывая индивидуальные настройки.</div>
+      </label>
+      <div class="card-actions">
+          <button type="button" class="primary"
+            :class="{ 'is-busy': busyButton === 'tls-blob-vers-all' }"
+            :disabled="versAllDisabled"
+            @click="submitVersAll">Применить ко всем</button>
+      </div>
+      <template v-for="p in PROFILE_ITEMS" :key="p.id">
+        <label>
+          <span>{{ p.title }}</span>
+          <select :id="`tls-blob-vers-${p.id}`" v-model="versSelected[p.id]" :disabled="busyActive">
+            <option value="">Не задано (как сейчас)</option>
+            <option v-for="opt in VERS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+          <div class="form-hint">Сейчас: <code>{{ versDisplay(p.id) }}</code>.</div>
+        </label>
+        <div class="card-actions">
+          <button type="button" class="primary"
+            :class="{ 'is-busy': busyButton === `tls-blob-vers-${p.id}` }"
+            :disabled="versSubmitDisabled(p.id)"
+            @click="submitVers(p.id)">Применить</button>
         </div>
       </template>
     </form>

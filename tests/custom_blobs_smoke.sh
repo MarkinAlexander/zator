@@ -211,6 +211,38 @@ custom_blobs_delete 2 || fail "delete: блоб без ссылок"
 [ "$(custom_blobs_count)" = "1" ] || fail "delete: count != 1"
 [ ! -f "$ROOT/files/fake/custom_blob/second.bin" ] || fail "delete: файл не удалён"
 
+# --- 8b. Guard: файл, выбранный слотом блоба (п.16/панель), не удаляется ------
+# Слот (maxru/z2r_prof_N/fakewgblob) вне блока #Z2R_CUSTOM_BLOBS_* и строка
+# blob_files.tsv блокируют удаление, пока ссылка жива.
+CB_LIB_SRC="$(tr -d '\r' < "$REPO_DIR/lib/custom_blobs.sh")"
+assert_contains "$CB_LIB_SRC" 'custom_blobs_file_slot_refs' \
+  "custom_blobs: нет guard слотовых ссылок при удалении"
+
+printf 'SLOTDATA' > "$ROOT/files/fake/custom_blob/slot_used.bin"
+guard_id="$(custom_blobs_add guard_name slot_used.bin 'guard')" || fail "guard: add не прошёл"
+guard_id="$(printf '%s' "$guard_id" | tr -d '[:space:]')"
+awk -v ins="--blob=z2r_prof_2:@$(custom_blobs_dir)/slot_used.bin" '
+  /^--blob=maxru:@/ && !done { print; print ins; done=1; next }
+  { print }' "$CFG" > "$CFG.guard" && mv -f "$CFG.guard" "$CFG"
+grep -qxF -- "--blob=z2r_prof_2:@$(custom_blobs_dir)/slot_used.bin" "$CFG" \
+  || fail "guard: слотовая строка не вставлена в конфиг"
+blob_files_set z2r_prof_3 custom_blob/slot_used.bin || fail "guard: blob_files_set не прошёл"
+
+if custom_blobs_delete "$guard_id" 2>"$TMP_DIR/guard.err"; then
+  fail "guard: delete не должен проходить при слоте, ссылающемся на файл"
+fi
+grep -q 'используется слотом блоба' "$TMP_DIR/guard.err" || fail "guard: нет пояснения"
+[ -f "$ROOT/files/fake/custom_blob/slot_used.bin" ] || fail "guard: файл удалён при активном слоте"
+[ "$(custom_blobs_count)" = "2" ] || fail "guard: строка должна остаться до сброса слота"
+
+# сброс ссылок (слот из конфига + строка blob_files.tsv) открывает удаление
+blob_files_clear z2r_prof_3
+awk -v tok=":@$(custom_blobs_dir)/slot_used.bin" 'index($0, tok)==0' "$CFG" > "$CFG.guard" \
+  && mv -f "$CFG.guard" "$CFG"
+custom_blobs_delete "$guard_id" || fail "guard: delete не прошёл после сброса слота"
+[ ! -f "$ROOT/files/fake/custom_blob/slot_used.bin" ] || fail "guard: файл не удалён после сброса"
+[ "$(custom_blobs_count)" = "1" ] || fail "guard: count != 1 после удаления"
+
 # --- 9. Бэкап-раунд ------------------------------------------------------------
 
 export Z2R_BACKUP_DIR="$TMP_DIR/backups"

@@ -596,17 +596,53 @@ blob_override_get() {
   case "$name" in
     "$Z2R_BLOB_SLOT_PREFIX"*)
       file="$(sed -n -E "s#.*--blob=$(blob_override_slot "$profile"):@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\2#p" "$cfg" 2>/dev/null | head -n1)"
+      case "$file" in
+        zver/prof"$profile"_*) file="${file#zver/prof"$profile"_}" ;;
+        zver/*) file="${file#zver/}" ;;
+      esac
       [ -n "$file" ] && echo "$file" || echo "$name"
       ;;
     *) echo "$name" ;;
   esac
 }
 
+# Имя файла внутри custom_blob/ («Свои блобы»): тот же строгий формат, что при
+# загрузке, но проверка самодостаточна (custom_blobs.sh сорсится позже этого
+# модуля): без '/' и '..', не скрытый, начинается с буквы/цифры, только
+# [A-Za-z0-9._-].
+_blob_custom_base_ok() {
+  local base="$1"
+  [ -n "$base" ] || return 1
+  case "$base" in
+    */*|.*|.|..) return 1 ;;
+  esac
+  case "$base" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$base" in
+    [A-Za-z0-9]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Валидация файла-кандидата: TLS-профили — tls_*.bin / custom_tls.bin, QUIC
 # (профиль 5) — UDP-полезные нагрузки из каталога фейков. Без второго
 # аргумента — прежний TLS-фильтр (совместимость WebUI/старых вызовов).
+# Значения custom_blob/<файл> — пользовательские блобы («Свои блобы»): имя уже
+# прошло строгую валидацию при загрузке, поэтому basename-паттерны не
+# применяются — проверяются только формат имени и существование файла.
+# Зеркало перечислителей (_tls_blob_list_files CLI, api_quic_blobs_json /
+# api_state / api_tls_blob_get WebUI) — держать синхронно при изменении любого.
 blob_override_file_valid() {
   local file="$1" profile="${2:-}"
+  case "$file" in
+    custom_blob/*)
+      local base="${file#custom_blob/}"
+      _blob_custom_base_ok "$base" || return 1
+      [ -f "$Z2R_BLOB_FAKE_DIR/custom_blob/$base" ]
+      return
+      ;;
+  esac
   case "$profile" in
     5)
       case "$file" in
@@ -663,7 +699,16 @@ ORCH_BLOB_FILES_TSV="${ORCH_BLOB_FILES_TSV:-$ORCH_DIR/blob_files.tsv}"
 blob_files_set() {
   local name="$1" file="$2" tmp
   printf '%s' "$name" | grep -Eq '^[A-Za-z0-9_]+$' || return 2
-  printf '%s' "$file" | grep -Eq '^[A-Za-z0-9_.-]+$' || return 2
+  # файл: плоское имя ИЛИ custom_blob/<файл> («Свои блобы», один уровень
+  # без '..' — см. _blob_custom_base_ok / blob_override_file_valid)
+  case "$file" in
+    custom_blob/*)
+      _blob_custom_base_ok "${file#custom_blob/}" || return 2
+      ;;
+    *)
+      printf '%s' "$file" | grep -Eq '^[A-Za-z0-9_.-]+$' || return 2
+      ;;
+  esac
   mkdir -p "$ORCH_DIR" || return 1
   [ -f "$ORCH_BLOB_FILES_TSV" ] || : > "$ORCH_BLOB_FILES_TSV"
   tmp="${ORCH_BLOB_FILES_TSV}.tmp.$$"
@@ -690,6 +735,53 @@ blob_files_clear() {
   tmp="${ORCH_BLOB_FILES_TSV}.tmp.$$"
   awk -F '\t' -v nm="$name" '{if ($1==nm) next; print}' "$ORCH_BLOB_FILES_TSV" > "$tmp" \
     && mv -f "$tmp" "$ORCH_BLOB_FILES_TSV" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+ORCH_BLOB_VERS_TSV="${ORCH_BLOB_VERS_TSV:-$ORCH_DIR/blob_vers.tsv}"
+Z2R_BLOB_VERS_PROFILES="1 2 3 4 8"
+
+blob_vers_supported_profiles() {
+  printf '%s\n' $Z2R_BLOB_VERS_PROFILES
+}
+
+blob_vers_get() {
+  local profile="$1"
+  [ -f "$ORCH_BLOB_VERS_TSV" ] || return 0
+  awk -F '\t' -v pr="$profile" '$1==pr {print $2; exit}' "$ORCH_BLOB_VERS_TSV"
+}
+
+blob_vers_valid() {
+  case "$1" in
+    01|02|03|orig|alt) return 0 ;;
+  esac
+  return 1
+}
+
+blob_vers_set() {
+  local profile="$1" value="$2" tmp
+  printf '%s' "$profile" | grep -Eq '^[0-9]+$' || return 2
+  blob_vers_valid "$value" || return 2
+  mkdir -p "$ORCH_DIR" || return 1
+  [ -f "$ORCH_BLOB_VERS_TSV" ] || : > "$ORCH_BLOB_VERS_TSV"
+  tmp="${ORCH_BLOB_VERS_TSV}.tmp.$$"
+  awk -F '\t' -v OFS='\t' -v pr="$profile" -v vl="$value" '
+    {if ($1==pr) {if (!seen) {print pr, vl; seen=1}; next} print}
+    END {if (!seen) print pr, vl}
+  ' "$ORCH_BLOB_VERS_TSV" > "$tmp" && mv -f "$tmp" "$ORCH_BLOB_VERS_TSV" || {
+    rm -f "$tmp"
+    echo "Unable to update blob vers tsv" >&2
+    return 1
+  }
+  return 0
+}
+
+blob_vers_clear() {
+  local profile="$1" tmp
+  [ -f "$ORCH_BLOB_VERS_TSV" ] || return 0
+  tmp="${ORCH_BLOB_VERS_TSV}.tmp.$$"
+  awk -F '\t' -v pr="$profile" '{if ($1==pr) next; print}' "$ORCH_BLOB_VERS_TSV" > "$tmp" \
+    && mv -f "$tmp" "$ORCH_BLOB_VERS_TSV" || { rm -f "$tmp"; return 1; }
   return 0
 }
 
@@ -722,6 +814,83 @@ blob_files_apply() {
     fi
     sed -i $ereg "s#(--blob=${name}:@/opt/(zapret2|zator)/files/fake/)[^[:space:]]+#\\1${file}#g" "$cfg"
   done < "$ORCH_BLOB_FILES_TSV"
+  return 0
+}
+
+blob_vers_base_for() {
+  local cfg="$1" profile="$2" slot="z2r_prof_${2}" decl base
+  decl="$(sed -n -E "s#.*--blob=${slot}:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\\2#p" "$cfg" 2>/dev/null | head -n1)"
+  case "$decl" in
+    "zver/prof${profile}_"*)
+      base="$(blob_files_get "$slot")"
+      [ -n "$base" ] || base="${decl#zver/prof${profile}_}"
+      printf '%s\n' "$base"
+      ;;
+    *) [ -n "$decl" ] && printf '%s\n' "$decl" ;;
+  esac
+}
+
+_blob_vers_is_tls() {
+  head -c 2 "$1" 2>/dev/null | grep -q "$(printf '\026\003')"
+}
+
+blob_vers_apply_file() {
+  local cfg="$1" profile ver slot decl base bn src copy o ereg
+  [ -f "$cfg" ] || return 0
+  ereg="$(config_sed_ereg 2>/dev/null || echo -E)"
+  for profile in $Z2R_BLOB_VERS_PROFILES; do
+    ver="$(blob_vers_get "$profile")"
+    blob_vers_valid "$ver" || ver=""
+    [ "$ver" = "alt" ] && ver="03"
+    slot="z2r_prof_${profile}"
+    decl="$(sed -n -E "s#.*--blob=${slot}:@/opt/(zapret2|zator)/files/fake/([^[:space:]]+).*#\\2#p" "$cfg" 2>/dev/null | head -n1)"
+    if [ -z "$ver" ]; then
+      case "$decl" in
+        "zver/prof${profile}_"*)
+          base="${decl#zver/prof${profile}_}"
+          if [ -f "$Z2R_BLOB_FAKE_DIR/$base" ]; then
+            sed -i $ereg "s#--blob=${slot}:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#--blob=${slot}:@/opt/zator/files/fake/${base}#g" "$cfg"
+          fi
+          ;;
+      esac
+      continue
+    fi
+    if [ -z "$decl" ]; then
+      echo "blob_vers: нет декларации ${slot} — пропуск" >&2
+      continue
+    fi
+    base="$(blob_vers_base_for "$cfg" "$profile")"
+    if [ -z "$base" ] || [ ! -f "$Z2R_BLOB_FAKE_DIR/$base" ]; then
+      echo "blob_vers: файл $base для ${slot} отсутствует — пропуск" >&2
+      continue
+    fi
+    bn="${base##*/}"
+    src="$Z2R_BLOB_FAKE_DIR/$base"
+    if [ "$base" = "$bn" ] && [ -f "${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/fake_orig/$bn" ]; then
+      src="${ZATOR_ROOT:-/opt/zator}/extra_strats/cache/fake_orig/$bn"
+    fi
+    mkdir -p "$Z2R_BLOB_FAKE_DIR/zver" || continue
+    copy="zver/prof${profile}_${bn}"
+    cp -f "$src" "$Z2R_BLOB_FAKE_DIR/$copy" || continue
+    if [ "$ver" != "orig" ]; then
+      if ! _blob_vers_is_tls "$Z2R_BLOB_FAKE_DIR/$copy"; then
+        echo "blob_vers: $copy не TLS-рекорд — пропуск" >&2
+        rm -f "$Z2R_BLOB_FAKE_DIR/$copy"
+        continue
+      fi
+      case "$ver" in
+        01) o='\001' ;;
+        02) o='\002' ;;
+        03) o='\003' ;;
+        04) o='\004' ;;
+      esac
+      printf "\\003$o" | dd of="$Z2R_BLOB_FAKE_DIR/$copy" bs=1 seek=1 count=2 conv=notrunc 2>/dev/null
+    fi
+    sed -i $ereg "s#--blob=${slot}:@/opt/(zapret2|zator)/files/fake/[^[:space:]]+#--blob=${slot}:@/opt/zator/files/fake/${copy}#g" "$cfg"
+    if [ "$(blob_override_name "$profile")" != "$slot" ]; then
+      blob_override_set "$profile" "$slot" || true
+    fi
+  done
   return 0
 }
 

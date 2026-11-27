@@ -720,19 +720,32 @@ api_state() {
       blobs_tls="${blobs_tls}${blobs_tls:+,}\"${b}\"" ;;
     esac
   done
+  # «Свои блобы» (custom_blob/): значения custom_blob/<файл>, любые имена —
+  # валидация на POST через blob_override_file_valid (паттерны для них
+  # не применяются)
+  for f in "$fake_dir"/custom_blob/*; do
+    [ -f "$f" ] || continue
+    blobs_tls="${blobs_tls}${blobs_tls:+,}\"custom_blob/${f##*/}\""
+  done
   for f in "$fake_dir"/wg_initial_fake_*; do
     [ -f "$f" ] || continue
     b="${f##*/}"
     blobs_wg="${blobs_wg}${blobs_wg:+,}\"${b}\""
+  done
+  for f in "$fake_dir"/custom_blob/*; do
+    [ -f "$f" ] || continue
+    blobs_wg="${blobs_wg}${blobs_wg:+,}\"custom_blob/${f##*/}\""
   done
   local profile_blobs_json="" _pb
   while read -r _pb; do
     profile_blobs_json="${profile_blobs_json}${profile_blobs_json:+,}\"${_pb}\":\"$(json_escape "$(blob_override_get "$_pb" "${ZAPRET2_ROOT:-/opt/zapret2}/config")")\""
   done < <(blob_override_supported_profiles)
   local profile_modes_json profile_snis_json profile_sizes_json
+  local profile_vers_json
   profile_modes_json="$(api_fake_mode_modes_json)"
   profile_snis_json="$(api_fake_mode_snis_json)"
   profile_sizes_json="$(api_clone_size_sizes_json)"
+  profile_vers_json="$(api_blob_vers_json)"
   ports_split "$MENU_PORTS_TCP_FULL" "80"
   local tcp_full="$MENU_PORTS_TCP_FULL" tcp_user="$_PORTS_USER" tcp_base="$_PORTS_BASE"
   ports_split "$MENU_PORTS_UDP_FULL" "443"
@@ -826,7 +839,7 @@ api_state() {
   tcp_user_json="$(_csv_tokens_json "$tcp_user")"
   udp_user_json="$(_csv_tokens_json "$udp_user")"
   send_json "200 OK" "$(cat <<EOF
-{"status":$(status_json),"version":$version_json,"scopes":$scopes_block,"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"quic_blobs":[$quic_list_json],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$wg_on},"fallback":{"state":"$MENU_FALLBACK","enabled":$fb_on},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$ug_on,"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$am_on},"hostlist":{"state":"$MENU_HOSTLIST","auto":$hl_auto},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$rst_on,"lua_available":$rst_lua},"reasm":{"state":"$MENU_REASM","enabled":$reasm_on},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$tcp_user_json],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$udp_user_json],"base":"$udp_base"}},"provider":$provider_block,"backups":$backups_block}
+{"status":$(status_json),"version":$version_json,"scopes":$scopes_block,"tls_blob":{"current_mode":"$MENU_TLS_BLOB_MODE","current_blob":"$MENU_BLOB_FILE","available_blobs":[$blobs_tls],"quic_blobs":[$quic_list_json],"profile_blobs":{$profile_blobs_json},"profile_modes":{$profile_modes_json},"profile_snis":{$profile_snis_json},"profile_sizes":{$profile_sizes_json},"profile_vers":{$profile_vers_json}},"wg_blob":{"current_blob":"$MENU_WG_BLOB","current_repeats":"$MENU_WG_REPEATS","available_blobs":[$blobs_wg]},"wg_state":{"state":"$MENU_WG_STATE_RAW","enabled":$wg_on},"fallback":{"state":"$MENU_FALLBACK","enabled":$fb_on},"udp_games":{"state":"$MENU_UDP_GAMES","enabled":$ug_on,"ports":"$udp_full"},"wssize_ramp":$ws_json,"auto_mode":{"state":"$MENU_AUTO_MODE","enabled":$am_on},"hostlist":{"state":"$MENU_HOSTLIST","auto":$hl_auto},"rst_guard":{"state":"$MENU_RST_GUARD","enabled":$rst_on,"lua_available":$rst_lua},"reasm":{"state":"$MENU_REASM","enabled":$reasm_on},"quic443":$quic_json,"dns_desync":$dns_json,"ports":{"tcp":{"full":"$tcp_full","user":[$tcp_user_json],"base":"$tcp_base"},"udp":{"full":"$udp_full","user":[$udp_user_json],"base":"$udp_base"}},"provider":$provider_block,"backups":$backups_block}
 EOF
 )"
 }
@@ -962,9 +975,10 @@ api_update_check() {
   send_json "200 OK" "{\"update_available\":$update,\"release\":\"$j_rel\",\"latest_zator_date\":\"$j_lz\",\"latest_webui_date\":\"$j_lw\",\"checked_at\":\"$j_ck\",\"error\":\"$j_err\"}"
 }
 
-# Кандидаты QUIC-блобов (профиль 5): UDP-полезные нагрузки из каталога фейков.
-# Фильтр зеркалит blob_override_file_valid 5 / _tls_blob_list_files 5 CLI —
-# держать синхронно при изменении любого из трёх.
+# Кандидаты QUIC-блобов (профиль 5): UDP-полезные нагрузки из каталога фейков
+# плюс «Свои блобы» (custom_blob/<файл>, любые имена — см.
+# blob_override_file_valid). Фильтр зеркалит blob_override_file_valid 5 /
+# _tls_blob_list_files 5 CLI — держать синхронно при изменении любого из трёх.
 api_quic_blobs_json() {
   local fake_dir="${Z2R_BLOB_FAKE_DIR:-/opt/zator/files/fake}" f out=""
   # bash-глоб вместо find|sort (+проба sort -z): глоббинг и сортировка —
@@ -977,6 +991,10 @@ api_quic_blobs_json() {
         out="${out}${out:+,}\"$f\""
         ;;
     esac
+  done
+  for f in "$fake_dir"/custom_blob/*; do
+    [ -f "$f" ] || continue
+    out="${out}${out:+,}\"custom_blob/${f##*/}\""
   done
   printf '%s' "$out"
 }
@@ -1005,6 +1023,12 @@ api_tls_blob_get() {
         ;;
     esac
   done
+  # «Свои блобы» (custom_blob/): значения custom_blob/<файл>, любые имена —
+  # валидация на POST через blob_override_file_valid
+  for f in "$fake_dir"/custom_blob/*; do
+    [ -f "$f" ] || continue
+    available_blobs="${available_blobs}${available_blobs:+,}\"custom_blob/${f##*/}\""
+  done
 
   send_json "200 OK" "{
     \"current_mode\":\"$(json_escape "$current_mode")\",
@@ -1014,7 +1038,8 @@ api_tls_blob_get() {
     \"profile_blobs\":{$(api_tls_blob_profile_blobs_json)},
     \"profile_modes\":{$(api_fake_mode_modes_json)},
     \"profile_snis\":{$(api_fake_mode_snis_json)},
-    \"profile_sizes\":{$(api_clone_size_sizes_json)}
+    \"profile_sizes\":{$(api_clone_size_sizes_json)},
+    \"profile_vers\":{$(api_blob_vers_json)}
   }"
 }
 
@@ -1033,7 +1058,13 @@ api_tls_blob_profile_blobs_json() {
         ci = index(tok, ":@/")
         if (ci > 0) {
           f = substr(tok, ci + 2)
-          sub(/.*\//, "", f)
+          # f — полный путь; срезаем всё до /files/fake/ (файл может лежать и в
+          # подкаталоге custom_blob/ «Своих блобов» — тогда оставляем префикс
+          # каталога, чтобы значение совпадало с элементом available_blobs;
+          # штатные плоские файлы по-прежнему показываются базовым именем)
+          fi = index(f, "/files/fake/")
+          if (fi > 0) f = substr(f, fi + length("/files/fake/"))
+          else sub(/.*\//, "", f)
           print substr(tok, 1, ci - 1) "\t" f
         }
         l = substr(l, RSTART + RLENGTH)
@@ -1050,6 +1081,10 @@ api_tls_blob_profile_blobs_json() {
         [ "$nm" = "$name" ] && { val="$f"; break; }
       done <<< "$decl"
       [ -n "$val" ] || val="$name"
+      case "$val" in
+        zver/prof"$p"_*) val="${val#zver/prof"$p"_}" ;;
+        zver/*) val="${val#zver/}" ;;
+      esac
     fi
     out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$val")\""
   done < <(blob_override_supported_profiles)
@@ -1064,6 +1099,12 @@ api_tls_blob_set() {
 
   case "$blob" in
     fake_default_tls)
+      ;;
+    custom_blob/*)
+      # «Свои блобы»: basename-паттерны не применяются (валидация при
+      # загрузке), проверяем формат имени и существование файла
+      _blob_custom_base_ok "${blob#custom_blob/}" || send_error "400 Bad Request" "Некорректное значение блоба: $blob"
+      [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
       ;;
     tls_*.bin|custom_tls.bin)
       [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
@@ -1192,6 +1233,40 @@ api_fake_mode_set() {
 # Применяется без рестарта (TTL-кэш locked.lua ~2с).
 
 # JSON-объект «профиль -> лимит байт» ("" = без ограничения) для GET-ответов.
+api_blob_vers_json() {
+  local out="" p v
+  while read -r p; do
+    v="$(blob_vers_get "$p")"
+    out="${out}${out:+,}\"$(json_escape "$p")\":\"$(json_escape "$v")\""
+  done < <(blob_vers_supported_profiles)
+  printf '%s' "$out"
+}
+
+api_tls_blob_ver_set() {
+  local profile="$PARAM_PROFILE" value="$PARAM_VALUE"
+  local cfg="/opt/zapret2/config"
+  local known=0
+  for p in $(blob_vers_supported_profiles); do
+    [ "$p" = "$profile" ] && known=1
+  done
+  if [ "$profile" != "all" ] && [ "$known" != 1 ]; then
+    send_error "400 Bad Request" "Некорректный профиль: $profile"
+  fi
+  if [ -z "$value" ] || [ "$value" = "global" ]; then
+    for p in $(blob_vers_supported_profiles); do
+      blob_vers_clear "$p"
+    done
+  else
+    blob_vers_valid "$value" || send_error "400 Bad Request" "Некорректная версия: 01|02|03|04|orig"
+    for p in $(blob_vers_supported_profiles); do
+      blob_vers_set "$p" "$value" || send_error "500 Internal Server Error" "Не удалось сохранить"
+    done
+  fi
+  blob_vers_apply_file "$cfg"
+  _service_apply_restart
+    send_json "200 OK" "\"ok\":true,\"restarted\":$_SERVICE_RESTARTED,\"restart_required\":true}"
+}
+
 api_clone_size_sizes_json() {
   local out="" p
   while read -r p; do
@@ -1233,13 +1308,18 @@ api_wg_blob_get() {
   current_repeats="$(sed -n -E 's#.*blob=fakewgblob:repeats=([0-9]+).*#\1#p' "$cfg" | head -n1)"
   [ -z "$current_repeats" ] && current_repeats=""
 
-  # Только файлы вида wg_initial_fake_* (как в menu_action_set_wg_blob).
-  # bash-глоб + имя без $( ): find|sort|basename|$(json_escape) — по форку
-  # на файл, на слабых роутерах это стояло ~0.3 с
+  # Только файлы вида wg_initial_fake_* (как в menu_action_set_wg_blob)
+  # плюс «Свои блобы» (custom_blob/<файл>). bash-глоб + имя без $( ):
+  # find|sort|basename|$(json_escape) — по форку на файл, на слабых роутерах
+  # это стояло ~0.3 с
   available_blobs=""
   for f in "$fake_dir"/wg_initial_fake_*; do
     [ -f "$f" ] || continue
     available_blobs="${available_blobs}${available_blobs:+,}\"${f##*/}\""
+  done
+  for f in "$fake_dir"/custom_blob/*; do
+    [ -f "$f" ] || continue
+    available_blobs="${available_blobs}${available_blobs:+,}\"custom_blob/${f##*/}\""
   done
 
   send_json "200 OK" "{
@@ -1255,9 +1335,14 @@ api_wg_blob_set() {
   local fake_dir="/opt/zator/files/fake"
   local sed_ereg prefix
 
-  # Валидация имени файла: только wg_initial_fake_* (как в CLI)
+  # Валидация имени файла: wg_initial_fake_* либо «Свой блоб» custom_blob/<файл>
+  # (паттерны для кастомных не применяются — как в CLI)
   case "$blob" in
     wg_initial_fake_*)
+      [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
+      ;;
+    custom_blob/*)
+      _blob_custom_base_ok "${blob#custom_blob/}" || send_error "400 Bad Request" "Некорректное значение блоба: $blob"
       [ -f "$fake_dir/$blob" ] || send_error "400 Bad Request" "Файл блоба не существует: $blob"
       ;;
     *)

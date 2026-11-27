@@ -220,6 +220,12 @@ assert_contains "$_lib_raw_check" 'blob_override_file_valid "\$value" "\$profile
 assert_contains "$_lib_raw_check" 'fake_default_tls неприменим к QUIC-профилю' "api_tls_blob_profile_set: профиль 5 принимает fake_default_tls"
 assert_contains "$_lib_raw_check" 'api_quic_blobs_json' "_lib.sh: нет списка QUIC-кандидатов"
 assert_contains "$_lib_raw_check" '"quic_blobs"' "GET/state не отдаёт quic_blobs"
+# «Свои блобы» (custom_blob/…): валидатор в POST-ветках + перечислители списков
+assert_contains "$_lib_raw_check" '_blob_custom_base_ok' "_lib.sh: POST-ветки custom_blob без валидатора имён"
+assert_contains "$_lib_raw_check" 'custom_blob/\*; do' "_lib.sh: списки блобов без custom_blob"
+assert_contains "$fake_py_check" '_scan_custom_blobs' "fake_router_server.py не отдаёт «Свои блобы»"
+assert_contains "$fake_py_check" '_custom_blob_base_ok' "fake_router_server.py: POST-ветки custom_blob без валидатора"
+assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'custom_blob/' "API_CONTRACT.md без custom_blob"
 assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" 'h3_curl' "settings.cgi GET не знает h3_curl"
 assert_contains "$_lib_raw_check" 'api_h3_curl_get' "_lib.sh: нет api_h3_curl_get"
 assert_contains "$_lib_raw_check" 'z2r_quic_curl_detect' "api_h3_curl_get не использует детект quic_media"
@@ -233,6 +239,19 @@ assert_contains "$fake_py_check" 'h3_curl' "fake_router_server.py без ста�
 assert_contains "$fake_py_check" 'BLOB_OVERRIDE_PROFILE_IDS' "fake_router_server.py: профиль 5 не в переопределениях блобов"
 assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'h3_curl' "API_CONTRACT.md без h3_curl"
 assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'quic_blobs' "API_CONTRACT.md без quic_blobs"
+assert_contains "$(cat "$REPO_DIR/webui/cgi-bin/settings.cgi")" 'tls_blob_ver' "settings.cgi POST не вызывает tls_blob_ver"
+assert_contains "$_lib_raw_check" '^api_tls_blob_ver_set\(\)' "_lib.sh нет api_tls_blob_ver_set"
+assert_contains "$_lib_raw_check" '^api_blob_vers_json\(\)' "_lib.sh нет api_blob_vers_json"
+assert_contains "$_lib_raw_check" '"profile_vers"' "GET/state не отдаёт profile_vers"
+assert_contains "$fake_py_check" 'def apply_tls_blob_ver' "fake_router_server.py нет apply_tls_blob_ver"
+assert_contains "$fake_py_check" 'setting == "tls_blob_ver"' "fake_router_server.py не знает tls_blob_ver"
+assert_contains "$fake_py_check" '"profile_vers"' "fake_router_server.py не отдаёт profile_vers"
+assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'tls_blob_ver' "API_CONTRACT.md без tls_blob_ver"
+assert_contains "$(cat "$REPO_DIR/webui/dev/API_CONTRACT.md")" 'profile_vers' "API_CONTRACT.md без profile_vers"
+for id in tls-blob-vers-form 'tls-blob-vers-' tls_blob_ver profile_vers; do
+  grep -rq "$id" "$REPO_DIR/webui-src/src" || fail "webui-src не содержит $id"
+done
+assert_contains "$app_js_check" 'tls_blob_ver' "webui-src не шлёт tls_blob_ver"
 # Кастомные стратегии в вебе: CGI-эндпоинт, либа-инжектор, фронт, мок, контракт.
 [ -f "$REPO_DIR/webui/cgi-bin/custom.cgi" ] || fail "custom.cgi отсутствует"
 grep -q 'api_custom_list' "$REPO_DIR/webui/cgi-bin/custom.cgi" || fail "custom.cgi GET без api_custom_list"

@@ -176,6 +176,8 @@ export interface TlsBlobSettings {
   profile_snis?: Record<string, string>
   // «профиль -> лимит клонов в байтах»: "" = без ограничения (граница ТСПУ 1200)
   profile_sizes?: Record<string, string>
+  // «профиль -> 3-й байт TLS-рекорда»: "" = не задано, 01|02|03|orig
+  profile_vers?: Record<string, string>
 }
 
 export interface WgBlobSettings {

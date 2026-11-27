@@ -28,6 +28,8 @@ local MODE_OVERRIDES = {}
 -- clonesize.tsv: «profile<TAB>байты» — максимальный размер клон-пакета профиля.
 local CLONESIZE_PATH = LOCKED_DIR .. "/clonesize.tsv"
 local CLONE_SIZES = {}
+local BLOBVERS_PATH = LOCKED_DIR .. "/blob_vers.tsv"
+local BLOB_VERSES = {}
 
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
@@ -229,6 +231,28 @@ local function load_clone_size_file(path)
   end
   f:close()
 end
+local function blob_vers_parse_line(line)
+  if type(line) ~= "string" then return nil end
+  line = line:gsub(string.char(13) .. "$", "")
+  if line == "" or string.match(line, "^%s*#") then return nil end
+  local fields = {}
+  for field in (line .. "	"):gmatch("(.-)	") do fields[#fields + 1] = trim(field) end
+  if #fields ~= 2 then return nil end
+  if not string.match(fields[1], "^%d+$") then return nil end
+  if fields[2] ~= "orig" and fields[2] ~= "alt" and not string.match(fields[2], "^0[123]$") then return nil end
+  return fields[1], fields[2]
+end
+
+local function load_blob_vers_file(path)
+  local f = io.open(path, "r")
+  if not f then return end
+  for line in f:lines() do
+    local profile, vers = blob_vers_parse_line(line)
+    if profile then BLOB_VERSES[profile] = vers end
+  end
+  f:close()
+end
+
 
 local function load_locked_tables()
   local now = os.time()
@@ -255,6 +279,8 @@ local function load_locked_tables()
     load_mode_override_file(MODE_OVERRIDE_PATH)
     CLONE_SIZES = {}
     load_clone_size_file(CLONESIZE_PATH)
+    BLOB_VERSES = {}
+    load_blob_vers_file(BLOBVERS_PATH)
   end
 end
 
@@ -324,6 +350,14 @@ function locked_load_clone_size_for_tests(lines)
   for _, line in ipairs(lines or {}) do
     local profile, size = clone_size_parse_line(line)
     if profile then CLONE_SIZES[profile] = size end
+  end
+end
+
+function locked_load_vers_for_tests(lines)
+  BLOB_VERSES = {}
+  for _, line in ipairs(lines or {}) do
+    local profile, vers = blob_vers_parse_line(line)
+    if profile then BLOB_VERSES[profile] = vers end
   end
 end
 
@@ -655,6 +689,14 @@ local Z2R_CLONE_SNI_DEFAULT = "www.google.com"
 local Z2R_TLS_FAKE_LIMIT_MAX = 1200
 -- Рантайм-поле с порезанным фейк-блобом (по образцу Z2R_CLONE_FIELD).
 local Z2R_CAP_FIELD = "z2r_blob_cap"
+local Z2R_VERS_FIELD = "z2r_blob_vers"
+local Z2R_VERS_ROT = {}
+local function z2r_vers_rotate(profile_key)
+  local k = tostring(profile_key)
+  local nb = (Z2R_VERS_ROT[k] == 2) and 3 or 2
+  Z2R_VERS_ROT[k] = nb
+  return nb
+end
 
 -- Лимит клона профиля: clonesize.tsv[profile], нет строки = 1200.
 local function z2r_clone_limit_for(profile_key)
@@ -823,7 +865,7 @@ end
 
 -- FULL -> PARTIAL: кеш принадлежит соединению, а не объекту desync.
 -- Лимит участвует в ключе, как SNI; тип отправляющей стратегии его не меняет.
-local function z2r_cached_clienthello(desync, options, key, slot, limit, per_key)
+local function z2r_cached_clienthello(desync, options, key, slot, limit, per_key, profile)
   if desync.l7payload ~= "tls_client_hello" then return nil end
   key = key .. "\tmax_size=" .. limit
   if desync.track and not desync.track.lua_state then desync.track.lua_state = {} end
@@ -870,8 +912,16 @@ local function z2r_cached_clienthello(desync, options, key, slot, limit, per_key
     DLOG("fake_mode: clone cut "..#clone.."->"..#cut.."B (limit "..limit.."B) profile="..key)
     clone = cut
   end
-  if clone:sub(1, 3) == string.char(22, 3, 1) then
-    clone = clone:sub(1, 2) .. string.char(3) .. clone:sub(4)
+  if clone:sub(1, 2) == string.char(22, 3) then
+    local vers = profile and BLOB_VERSES[tostring(profile)] or nil
+    if vers == "orig" then
+    elseif vers == "alt" then
+      clone = clone:sub(1, 2) .. string.char(z2r_vers_rotate(profile)) .. clone:sub(4)
+    elseif vers ~= nil and vers:match("^0[123]$") then
+      clone = clone:sub(1, 2) .. string.char(tonumber(vers, 16)) .. clone:sub(4)
+    elseif clone:byte(3) == 1 then
+      clone = clone:sub(1, 2) .. string.char(3) .. clone:sub(4)
+    end
   end
   clone = z2r_clone_rerandomize(clone)
   state[slot] = { key = key, start_seq = start_seq, source = payload, data = clone }
@@ -883,7 +933,7 @@ local function fake_mode_user_clone(desync, sni, profile_key)
   return z2r_cached_clienthello(desync, {
     sni_del = true, sni_first = name, sni_snt_new = 0,
   }, tostring(profile_key) .. "\t" .. name, "z2r_full_clone",
-    z2r_clone_limit_for(profile_key))
+    z2r_clone_limit_for(profile_key), nil, profile_key)
 end
 
 -- Native/ECH clone имеет отдельный слот, общий лимит и защиту ретрансляций.
@@ -902,7 +952,7 @@ function tls_client_hello_clone(ctx, desync)
   end
   local profile = desync.z2r_clone_profile_key or desync.profile_n or desync_profile_key(desync)
   local clone = z2r_cached_clienthello(desync, desync.arg,
-    table.concat(parts, "|"), "z2r_explicit_full_clone", z2r_clone_limit_for(profile), true)
+    table.concat(parts, "|"), "z2r_explicit_full_clone", z2r_clone_limit_for(profile), true, profile)
   desync[desync.arg.blob] = clone
   if not clone and desync.arg.fallback then
     desync[desync.arg.blob] = blob(desync, desync.arg.fallback)
@@ -977,14 +1027,33 @@ function blob_override_execute(desync, verdict, instance, profile_key)
   end
   local saved_blob = instance.arg.blob
   local saved_fake_blob = instance.arg.fake_blob
+  local tls_mod_arg = instance.arg and instance.arg.tls_mod and instance.arg.tls_mod ~= "" or false
+  local vers_dyn = (not clone_data) and (not tls_mod_arg) and target ~= nil
+    and BLOB_VERSES[tostring(profile_key)] == "alt"
   local swapped = false
-  if target and z2r_blob_override_swap(profile_key, saved_blob) then
+  local clone_swap = target == Z2R_CLONE_FIELD
+  if target and (clone_swap or not tls_mod_arg) and z2r_blob_override_swap(profile_key, saved_blob) then
     instance.arg.blob = target
     swapped = true
   end
-  if target and z2r_blob_override_swap(profile_key, saved_fake_blob) then
+  if target and (clone_swap or not tls_mod_arg) and z2r_blob_override_swap(profile_key, saved_fake_blob) then
     instance.arg.fake_blob = target
     swapped = true
+  end
+  if target and tls_mod_arg and not clone_swap then
+    DLOG("blob_override: profile="..tostring(profile_key).." file-slot swap skipped, strategy carries tls_mod")
+  end
+  if vers_dyn and swapped and fake_arg then
+    local vname = instance.arg[fake_arg]
+    local okv, vdata = pcall(blob, desync, vname)
+    if okv and type(vdata) == "string" and #vdata >= 3 and vdata:byte(1) == 22 and vdata:byte(2) == 3 then
+      local nb = z2r_vers_rotate(profile_key)
+      if nb and vdata:byte(3) ~= nb then
+        desync[Z2R_VERS_FIELD] = vdata:sub(1, 2) .. string.char(nb) .. vdata:sub(3)
+        instance.arg[fake_arg] = Z2R_VERS_FIELD
+        swapped = true
+      end
+    end
   end
   -- Авторское правило: любой TLS-фейк <= 1200. Резолвим итоговое имя блоба
   -- после подмен (клон режима clone уже порезан по лимиту профиля — не трогаем),

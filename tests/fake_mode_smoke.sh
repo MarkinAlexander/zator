@@ -109,6 +109,11 @@ assert_contains "$LOCKED_LUA_SRC" 'load_clone_size_file\(CLONESIZE_PATH\)' \
 assert_contains "$LOCKED_LUA_SRC" 'size < 64 or size > 1200' \
   "парсер лимита принимает значения вне 64..1200"
 assert_contains "$LOCKED_LUA_SRC" 'function locked_load_clone_size_for_tests' "нет тестового сеттера лимитов"
+assert_contains "$LOCKED_LUA_SRC" 'blob_vers\.tsv' "locked.lua не читает blob_vers.tsv"
+assert_contains "$LOCKED_LUA_SRC" 'function blob_vers_parse_line' "locked.lua нет парсера версии рекорда"
+assert_contains "$LOCKED_LUA_SRC" 'load_blob_vers_file\(BLOBVERS_PATH\)' "load_locked_tables не перезагружает версии рекорда"
+assert_contains "$LOCKED_LUA_SRC" 'function locked_load_vers_for_tests' "нет тестового сеттера версий рекорда"
+assert_contains "$LOCKED_LUA_SRC" 'BLOB_VERSES\[tostring\(profile\)\]' "клон-байты не смотрят версию профиля"
 # кап TLS-фейков: только fake/fakemultisplit/fakemultidisorder, не-TLS не трогаем
 assert_contains "$LOCKED_LUA_SRC" 'Z2R_TLS_FAKE_LIMIT_MAX = 1200' "нет верхней границы ТСПУ 1200"
 assert_contains "$LOCKED_LUA_SRC" 'func == "fake" then return "blob"' "кап не знает fake()"
@@ -157,6 +162,10 @@ assert_contains "$SUBMENUS_SRC" '^clone_size_profile_pick\(\)' "нет экра�
 assert_contains "$SUBMENUS_SRC" 'clone_size_supported_profiles' "подменю лимитов не строится по профилям"
 assert_contains "$SUBMENUS_SRC" 'clone_size_submenu' "tls_blob_submenu не открывает подменю лимитов"
 assert_contains "$SUBMENUS_SRC" 'clone_size_display "\$profile"' "экран режима не показывает лимит клона"
+assert_contains "$SUBMENUS_SRC" '^tls_blob_vers_submenu\(\)' "нет подменю tls_blob_vers_submenu"
+assert_contains "$SUBMENUS_SRC" '^tls_blob_vers_profile_pick\(\)' "нет экрана tls_blob_vers_profile_pick"
+assert_contains "$SUBMENUS_SRC" 'blob_vers_supported_profiles' "подменю версий не строится по профилям"
+assert_contains "$SUBMENUS_SRC" 'tls_blob_vers_submenu' "tls_blob_submenu не открывает подменю версий"
 
 z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/mode_override.tsv' \
   || fail "z2r_backup_state_files не бэкапит mode_override.tsv"
@@ -164,6 +173,8 @@ z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/sni_o
   || fail "z2r_backup_state_files не бэкапит sni_override.tsv"
 z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/clonesize.tsv' \
   || fail "z2r_backup_state_files не бэкапит clonesize.tsv"
+z2r_backup_state_files 2>/dev/null | grep -q 'extra_strats/cache/orchestra/blob_vers.tsv' \
+  || fail "z2r_backup_state_files не бэкапит blob_vers.tsv"
 assert_contains "$AGENTS_SRC" 'mode_override\.tsv' "AGENTS.md не упоминает mode_override.tsv"
 
 SUPERSSWEEP_SRC="$(tr -d '\r' < "$REPO_DIR/lib/supersweep.sh")"
@@ -191,8 +202,14 @@ assert_contains "$LIB_SH_SRC" '^api_clone_size_set\(\)' "_lib.sh нет api_clon
 assert_contains "$LIB_SH_SRC" '^api_clone_size_sizes_json\(\)' "_lib.sh нет билдера лимитов"
 assert_contains "$LIB_SH_SRC" 'clone_size_valid "\$value"' "api не валидирует размер 64..1200"
 assert_contains "$LIB_SH_SRC" 'clone_size_clear "\$profile"' "сброс лимита не удаляет строку"
+assert_contains "$LIB_SH_SRC" '"profile_vers"' "GET/state не отдаёт profile_vers"
+assert_contains "$LIB_SH_SRC" '^api_blob_vers_json\(\)' "_lib.sh нет билдера версий рекорда"
+assert_contains "$LIB_SH_SRC" '^api_tls_blob_ver_set\(\)' "_lib.sh нет сеттера версий рекорда"
+assert_contains "$LIB_SH_SRC" 'blob_vers_valid "\$value"' "api не валидирует значение 01|02|03|orig"
+assert_contains "$LIB_SH_SRC" 'blob_vers_apply_file "\$cfg"' "сеттер версий не применяет патч-копии к конфигу"
 assert_contains "$SETTINGS_CGI_SRC" 'fake_mode\)' "settings.cgi не знает fake_mode"
 assert_contains "$SETTINGS_CGI_SRC" 'clone_size\)' "settings.cgi не знает clone_size"
+assert_contains "$SETTINGS_CGI_SRC" 'tls_blob_ver\)' "settings.cgi не знает tls_blob_ver"
 
 assert_contains "$WEBUI_SRC_ALL" 'fake-mode-form' "webui-src нет формы fake-mode-form"
 assert_contains "$WEBUI_SRC_ALL" 'fake-mode-\$\{p\.id\}' "webui-src нет селектов по профилям"

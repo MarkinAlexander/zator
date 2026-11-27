@@ -1467,8 +1467,11 @@ wireguard_submenu() {
 
 _tls_blob_list_files() {
   # Кандидаты по профилю: TLS — тот же фильтр, что у WebUI (tls_*.bin +
-  # custom_tls.bin); QUIC (профиль 5) — UDP-полезные нагрузки из каталога фейков
-  # (фильтр зеркалит blob_override_file_valid).
+  # custom_tls.bin); QUIC (профиль 5) — UDP-полезные нагрузки из каталога
+  # фейков. Плюс ваши блобы из custom_blob/ («Свои блобы») со значениями
+  # custom_blob/<файл> — у них basename-паттерны не применяются (см.
+  # blob_override_file_valid); зеркалим его же — держать синхронно с ним
+  # и с api_quic_blobs_json/api_state WebUI.
   local profile="${1:-}" f
   local names_quic=(-name 'quic_*.bin' -o -name 'QUIC_*.bin' -o -name 'fake_quic_*.bin' -o -name 'discord_udp_*.bin' -o -name 'wg_initial_fake_*.bin' -o -name 'stun*.bin')
   local names_tls=(-name 'tls_*.bin' -o -name 'custom_tls.bin')
@@ -1489,11 +1492,20 @@ _tls_blob_list_files() {
         | while IFS= read -r f; do basename "$f"; done
     fi
   fi
+  # «Свои блобы»: значения custom_blob/<файл>, любые имена (валидация при
+  # выборе — через blob_override_file_valid)
+  if sort -z </dev/null >/dev/null 2>&1; then
+    while IFS= read -r -d '' f; do printf 'custom_blob/%s\n' "$(basename "$f")"; done \
+      < <(find "$Z2R_BLOB_FAKE_DIR/custom_blob" -maxdepth 1 -type f -print0 2>/dev/null | sort -z)
+  else
+    find "$Z2R_BLOB_FAKE_DIR/custom_blob" -maxdepth 1 -type f 2>/dev/null | sort \
+      | while IFS= read -r f; do printf 'custom_blob/%s\n' "$(basename "$f")"; done
+  fi
 }
 
 tls_blob_profile_pick() {
   local profile="$1" title="$2" cfg="$3"
-  local slot cur cur_display choice i f file first_file last_file
+  local slot cur cur_display choice i f file first_file last_file ans
   local files=()
   local is_quic=0 builtin_idx=0
   [ "$profile" = "5" ] && is_quic=1
@@ -1567,6 +1579,26 @@ tls_blob_profile_pick() {
         pause_enter
         continue
       fi
+      # «Свои блобы»: basename-паттерны для них не проверяются, поэтому при
+      # QUIC (профиль 5) явно спросим, если файл не похож на UDP-полезную
+      # нагрузку (зеркалит дух запрета fake_default_tls для QUIC).
+      if [ "$is_quic" = "1" ]; then
+        case "$file" in
+          custom_blob/*)
+            case "${file##*/}" in
+              quic_*.bin|QUIC_*.bin|fake_quic_*.bin|discord_udp_*.bin|wg_initial_fake_*.bin|stun*.bin) ;;
+              *)
+                echo -e "${yellow}«${file##*/}» не похож на QUIC/UDP-полезную нагрузку (quic_*/discord_udp_*/wg_initial_fake_*/stun*).${plain}"
+                read -re -p "Всё равно назначить его профилю 5? [y/N]: " ans || ans=""
+                case "$ans" in
+                  y|Y|д|Д) ;;
+                  *) echo "Отменено."; pause_enter; continue ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+      fi
       if tls_blob_profile_apply_file "$cfg" "$profile" "$file" &&
          blob_override_set "$profile" "$slot"; then
         echo -e "${green}Файл слота ${slot} обновлён: ${file}${plain}"
@@ -1636,6 +1668,9 @@ tls_blob_submenu() {
     submenu_item "$i" "Размер клонов — максимальный размер по профилям"
     local size_item=$i
     i=$((i+1))
+    submenu_item "$i" "TLS-сигнатура фейков — байт по профилям"
+    local vers_item=$i
+    i=$((i+1))
     submenu_item "$i" "Свои блобы — декларации --blob= (custom_blob)"
     local blobs_item=$i
     echo ""
@@ -1661,6 +1696,9 @@ tls_blob_submenu() {
         ;;
       "$size_item")
         clone_size_submenu
+        ;;
+      "$vers_item")
+        tls_blob_vers_submenu
         ;;
       "$blobs_item")
         custom_blobs_submenu
@@ -2493,6 +2531,163 @@ clone_size_profile_pick() {
     else
       ui_invalid_input
     fi
+  done
+}
+
+tls_blob_vers_submenu() {
+  local cfg="/opt/zapret2/config"
+  [ ! -f "$cfg" ] && cfg="/opt/zapret2/config.default"
+  local p ans i idx v
+  local profiles=() titles=()
+  while read -r p; do
+    profiles+=("$p")
+    titles+=("$(config_profile_title "$p")")
+  done < <(blob_vers_supported_profiles)
+
+  while true; do
+    clear -x
+    echo -e "${cyan}--- TLS-сигнатура фейков (3-й байт, по профилям) ---${plain}"
+    echo ""
+    echo -e "${yellow}Android/Linux обычно шлют сигнатуру с байтом 03, Windows — с 01.${plain}"
+    echo -e "${yellow}Смена 3-го байта у фейков профиля (файловых блобов и клонов CH)${plain}"
+    echo -e "${yellow}иногда помогает обойти ТСПУ. Штука экспериментальная.${plain}"
+    echo -e "${yellow}«Не изменяется» — байты пакета не меняются. Смена требует рестарта (п.2).${plain}"
+    echo ""
+    i=1
+    for idx in "${!profiles[@]}"; do
+      v="$(blob_vers_get "${profiles[$idx]}")"
+      if [ -n "$v" ]; then
+        [ "$v" = "orig" ] && v="исходный пакет" || v="16 03 $v"
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "$v" green
+      else
+        submenu_status_item "$i" "Профиль ${profiles[$idx]} — ${titles[$idx]}" "не задано" yellow
+      fi
+      i=$((i+1))
+    done
+    submenu_item "$i" "Для всех профилей — задать сигнатуру сразу всем"
+    local all_item=$i
+    echo ""
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " ans || ans=""
+    if [ "$ans" = "0" ] || [ -z "$ans" ]; then
+      return
+    elif [ "$ans" = "$all_item" ]; then
+      tls_blob_vers_all_pick "$cfg"
+    elif ui_is_number_in_range "$ans" 1 "$(( ${#profiles[@]} ))"; then
+      idx=$((ans-1))
+      tls_blob_vers_profile_pick "${profiles[$idx]}" "${titles[$idx]}" "$cfg"
+    else
+      ui_invalid_input
+    fi
+  done
+}
+
+tls_blob_vers_all_pick() {
+  local cfg="$1" choice v
+  while true; do
+    clear -x
+    echo -e "${cyan}--- TLS-сигнатура фейков: все профили сразу ---${plain}"
+    echo ""
+    echo -e "${yellow}Задаёт одну сигнатуру всем TLS-профилям (1/2/3/4/8),${plain}"
+    echo -e "${yellow}перезаписывая индивидуальные настройки. Рестарт (п.2).${plain}"
+    echo ""
+    submenu_item "1" "01 — сигнатура 16 03 01 (так шлёт Windows)"
+    submenu_item "2" "02 — сигнатура 16 03 02"
+    submenu_item "3" "03 — сигнатура 16 03 03 (так шлют Android/Linux)"
+    submenu_item "4" "Чередование 02/03 — динамическая"
+    submenu_item "5" "Не изменяется — исходные байты пакета"
+    submenu_item "6" "Не задано — очистить у всех"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in
+      "0"|"")
+        return
+        ;;
+      [1-6])
+        case "$choice" in
+          1) v="01" ;;
+          2) v="02" ;;
+          3) v="03" ;;
+          4) v="alt" ;;
+          5) v="orig" ;;
+          6) v="" ;;
+        esac
+        local p
+        for p in $(blob_vers_supported_profiles); do
+          if [ -n "$v" ]; then blob_vers_set "$p" "$v" || true; else blob_vers_clear "$p"; fi
+        done
+        blob_vers_apply_file "$cfg"
+        echo -e "${green}Сигнатура ${v:-не задано} применена ко всем профилям.${plain}"
+        echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы блоб перезагрузился.${plain}"
+        telemetry_notify
+        pause_enter
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
+  done
+}
+
+tls_blob_vers_profile_pick() {
+  local profile="$1" title="$2" cfg="$3" cur choice v
+  while true; do
+    clear -x
+    cur="$(blob_vers_get "$profile")"
+    echo -e "${cyan}--- Профиль $profile ($title): TLS-сигнатура фейков ---${plain}"
+    echo ""
+    case "$cur" in
+      "") echo -e "${yellow}Сейчас: не задано (как сейчас)${plain}" ;;
+      orig) echo -e "${green}Сейчас: исходный пакет (байты не меняются)${plain}" ;;
+      alt) echo -e "${green}Сейчас: чередование 02/03${plain}" ;;
+      *) echo -e "${green}Сейчас: 16 03 ${cur}${plain}" ;;
+    esac
+    echo ""
+    submenu_item "1" "01 — сигнатура 16 03 01 (так шлёт Windows)"
+    submenu_item "2" "02 — сигнатура 16 03 02"
+    submenu_item "3" "03 — сигнатура 16 03 03 (так шлют Android/Linux)"
+    submenu_item "4" "Чередование 02/03 — динамическая"
+    submenu_item "5" "Не изменяется — исходные байты пакета"
+    submenu_item "6" "Не задано — как сейчас"
+    submenu_item "0" "Назад"
+    echo ""
+
+    read -re -p "Ваш выбор: " choice || choice=""
+    case "$choice" in
+      "0"|"")
+        return
+        ;;
+      [1-6])
+        case "$choice" in
+          1) v="01" ;;
+          2) v="02" ;;
+          3) v="03" ;;
+          4) v="alt" ;;
+          5) v="orig" ;;
+          6) v="" ;;
+        esac
+        if [ -n "$v" ]; then
+          blob_vers_set "$profile" "$v" || { echo -e "${red}Не удалось сохранить.${plain}"; pause_enter; continue; }
+        else
+          blob_vers_clear "$profile"
+        fi
+        if blob_vers_apply_file "$cfg"; then
+          echo -e "${green}Профиль $profile: сигнатура ${v:-не задано}.${plain}"
+          echo -e "${yellow}Перезапустите zapret2 (пункт 2 меню), чтобы блоб перезагрузился.${plain}"
+          telemetry_notify
+        else
+          echo -e "${red}Не удалось применить к конфигу.${plain}"
+        fi
+        pause_enter
+        ;;
+      *)
+        ui_invalid_input
+        ;;
+    esac
   done
 }
 

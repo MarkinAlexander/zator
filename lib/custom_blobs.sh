@@ -195,11 +195,19 @@ custom_blobs_replace() {
 
 # Удаление: блоб, на который ссылаются пользовательские стратегии, не удаляется.
 custom_blobs_delete() {
-  local id="$1" name file
+  local id="$1" name file slot_refs
   custom_blobs_row "$id" >/dev/null || return 2
   name="$(custom_blobs_row "$id" | awk -F '\t' '{print $2}')"
   if [ "$(custom_strategies_blob_ref_rows "$name")" != "0" ]; then
     echo "Блоб «$name» используется в пользовательских стратегиях ($(custom_strategies_blob_ref_rows "$name") шт.) — сначала уберите ссылки." >&2
+    return 2
+  fi
+  # файл может использоваться штатными слотами (maxru/z2r_prof_N/fakewgblob) —
+  # его снос сломал бы слот при рестарте; отказываем целиком, пока ссылка жива
+  file="$(custom_blobs_row "$id" | awk -F '\t' '{print $3}')"
+  slot_refs="$(custom_blobs_file_slot_refs "$file")"
+  if [ -n "$file" ] && [ "$slot_refs" != "0" ]; then
+    echo "Файл «$file» используется слотом блоба (выбор в п.16 / панели «Блобы и SNI»: ${slot_refs} шт.) — сначала сбросьте выбор слота." >&2
     return 2
   fi
   local content row
@@ -231,6 +239,29 @@ custom_blobs_files_list() {
   dir="$(custom_blobs_dir)"
   [ -d "$dir" ] || return 0
   ( cd "$dir" 2>/dev/null && ls -1 2>/dev/null | sort ) || return 0
+}
+
+# Сколько «штатных» ссылок на файл custom_blob/<file> существует ВНЕ блока
+# #Z2R_CUSTOM_BLOBS_*: слоты maxru/z2r_prof_N/fakewgblob в конфиге (строки
+# --blob=...:@.../custom_blob/<file>) плюс сохранённый выбор blob_files.tsv
+# (значение custom_blob/<file>). Ссылки-декларации «Своих блобов» (внутри
+# маркеров) не считаются — за них отвечает custom_strategies_blob_ref_rows.
+custom_blobs_file_slot_refs() {
+  local file="$1" cfg="${2:-${ZAPRET2_ROOT:-/opt/zapret2}/config}" n=0 inblk
+  [ -n "$file" ] || { echo 0; return; }
+  if [ -f "$cfg" ]; then
+    n="$(awk -v tok=":@$(custom_blobs_dir)/$file" '
+      /^#Z2R_CUSTOM_BLOBS_BEGIN/ { inblk=1; next }
+      /^#Z2R_CUSTOM_BLOBS_END/   { inblk=0; next }
+      inblk { next }
+      index($0, tok) { c++ }
+      END { print c+0 }
+    ' "$cfg")"
+  fi
+  if [ -n "${ORCH_BLOB_FILES_TSV:-}" ] && [ -f "$ORCH_BLOB_FILES_TSV" ]; then
+    n=$(( n + $(awk -F '\t' -v v="custom_blob/$file" '$2 == v {c++} END {print c+0}' "$ORCH_BLOB_FILES_TSV") ))
+  fi
+  printf '%s\n' "$n"
 }
 
 # Сохраняет загруженный файл (путь $1) под санитизированным именем $2.

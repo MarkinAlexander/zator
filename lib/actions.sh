@@ -97,6 +97,9 @@ config_apply_from_default() {
   if type blob_files_apply >/dev/null 2>&1; then
     blob_files_apply "$root/config.default" || true
   fi
+  if type blob_vers_apply_file >/dev/null 2>&1; then
+    blob_vers_apply_file "$root/config.default" || true
+  fi
 
   cp -f "$root/config.default" "$root/config"
   if [ -f "$old_scope_cfg" ]; then
@@ -306,6 +309,7 @@ menu_action_set_tls_blob() {
   local current_mode=""
   local blobs=()
   local i=0
+  local _custom_shown=0
   local choice=""
   local selected_blob=""
 
@@ -330,10 +334,16 @@ menu_action_set_tls_blob() {
     while IFS= read -r -d '' f; do
       blobs+=("$(basename "$f")")
     done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' -print0 | sort -z)
+    while IFS= read -r -d '' f; do
+      blobs+=("custom_blob/$(basename "$f")")
+    done < <(find "$fake_dir/custom_blob" -maxdepth 1 -type f -print0 2>/dev/null | sort -z)
   else
     while IFS= read -r f; do
       blobs+=("$(basename "$f")")
     done < <(find "$fake_dir" -maxdepth 1 -type f -name '*.bin' | sort)
+    while IFS= read -r f; do
+      blobs+=("custom_blob/$(basename "$f")")
+    done < <(find "$fake_dir/custom_blob" -maxdepth 1 -type f 2>/dev/null | sort)
   fi
 
   if [ "${#blobs[@]}" -eq 0 ]; then
@@ -356,6 +366,7 @@ menu_action_set_tls_blob() {
   echo "1. fake_default_tls (встроенный)"
   i=1
   for b in "${blobs[@]}"; do
+    case "$b" in custom_blob/*) [ "$_custom_shown" = 1 ] || { _custom_shown=1; echo -e "${yellow}   — ваши блобы (custom_blob) —${plain}"; } ;; esac
     i=$((i+1))
     echo "$i. $b"
   done
@@ -543,15 +554,22 @@ menu_action_set_wg_blob() {
     return 1
   fi
 
-  # Только файлы, начинающиеся с wg_initial_fake_
+  # Только файлы, начинающиеся с wg_initial_fake_; плюс ваши блобы (custom_blob)
+  local _custom_shown=0
   if sort -z </dev/null >/dev/null 2>&1; then
     while IFS= read -r -d '' f; do
       blobs+=("$(basename "$f")")
     done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' -print0 | sort -z)
+    while IFS= read -r -d '' f; do
+      blobs+=("custom_blob/$(basename "$f")")
+    done < <(find "$fake_dir/custom_blob" -maxdepth 1 -type f -print0 2>/dev/null | sort -z)
   else
     while IFS= read -r f; do
       blobs+=("$(basename "$f")")
     done < <(find "$fake_dir" -maxdepth 1 -type f -name 'wg_initial_fake_*' | sort)
+    while IFS= read -r f; do
+      blobs+=("custom_blob/$(basename "$f")")
+    done < <(find "$fake_dir/custom_blob" -maxdepth 1 -type f 2>/dev/null | sort)
   fi
 
   if [ "${#blobs[@]}" -eq 0 ]; then
@@ -567,6 +585,7 @@ menu_action_set_wg_blob() {
   echo -e "${yellow}Выберите файл blob для WireGuard:${plain}"
   i=0
   for b in "${blobs[@]}"; do
+    case "$b" in custom_blob/*) [ "$_custom_shown" = 1 ] || { _custom_shown=1; echo -e "${yellow}   — ваши блобы (custom_blob) —${plain}"; } ;; esac
     i=$((i+1))
     echo "$i. $b"
   done
@@ -1060,6 +1079,7 @@ extra_strats/cache/orchestra/locked.manual.tsv
 extra_strats/cache/orchestra/auto_locked.tsv
 extra_strats/cache/orchestra/blob_override.tsv
 extra_strats/cache/orchestra/blob_files.tsv
+extra_strats/cache/orchestra/blob_vers.tsv
 extra_strats/cache/orchestra/sni_override.tsv
 extra_strats/cache/orchestra/sni_pool.tsv
 extra_strats/cache/orchestra/sni_pool_policy.tsv
@@ -1960,6 +1980,9 @@ menu_action_backup_restore() {
   if type blob_files_apply >/dev/null 2>&1; then
     blob_files_apply "${ZAPRET2_ROOT:-/opt/zapret2}/config" && \
       echo -e "${green}Выбор блобов восстановлен в конфиг (рестарт применит).${plain}"
+  fi
+  if type blob_vers_apply_file >/dev/null 2>&1; then
+    blob_vers_apply_file "${ZAPRET2_ROOT:-/opt/zapret2}/config" || true
   fi
 
   rm -rf "$restore_dir"

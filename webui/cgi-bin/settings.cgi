@@ -75,7 +75,10 @@ case "${REQUEST_METHOD:-GET}" in
         ;;
       clone_size)
         api_clone_size_set
-        ;;
+    ;;
+    tls_blob_ver)
+      api_tls_blob_ver_set
+      ;;
       wg_blob)
         api_wg_blob_set
         ;;

@@ -953,8 +953,35 @@ def profile_state_set_and_apply(state_obj, profile, proto_list_str, state):
 # Порт функций для TLS-блоба (lib/actions.sh + webui/cgi-bin/_lib.sh)
 # ===========================================================================
 
+def _custom_blob_base_ok(base):
+    """_blob_custom_base_ok() — lib/orchestra_state.sh: имя файла в custom_blob/.
+
+    Без '/' и '..', не скрытый, начинается с буквы/цифры, только
+    [A-Za-z0-9._-].
+    """
+    if not base or "/" in base or base.startswith("."):
+        return False
+    if re.search(r"[^A-Za-z0-9._-]", base):
+        return False
+    return re.match(r"^[A-Za-z0-9]", base) is not None
+
+
+def _scan_custom_blobs(fake_dir):
+    """«Свои блобы» (custom_blob/<файл>): blob_override_file_valid — без
+    basename-паттернов, только формат имени и существование."""
+    blobs = []
+    cdir = os.path.join(fake_dir, "custom_blob")
+    if not os.path.isdir(cdir):
+        return blobs
+    for fname in sorted(os.listdir(cdir)):
+        if os.path.isfile(os.path.join(cdir, fname)) and _custom_blob_base_ok(fname):
+            blobs.append("custom_blob/" + fname)
+    return blobs
+
+
 def _scan_fake_blobs(fake_dir):
-    """Сканирует директорию fake для tls_*.bin / custom_tls.bin (api_tls_blob_get)."""
+    """Сканирует директорию fake для tls_*.bin / custom_tls.bin (api_tls_blob_get)
+    плюс «Свои блобы» (custom_blob/…)."""
     blobs = []
     if not os.path.isdir(fake_dir):
         return blobs
@@ -963,13 +990,15 @@ def _scan_fake_blobs(fake_dir):
             blobs.append(fname)
         elif fname == "custom_tls.bin":
             blobs.append(fname)
+    blobs.extend(_scan_custom_blobs(fake_dir))
     return blobs
 
 
 def _scan_quic_blobs(fake_dir):
     """Кандидаты QUIC-блобов профиля 5 (api_quic_blobs_json, _lib.sh).
 
-    Фильтр зеркалит blob_override_file_valid 5 / _tls_blob_list_files 5 CLI.
+    Фильтр зеркалит blob_override_file_valid 5 / _tls_blob_list_files 5 CLI,
+    плюс «Свои блобы» (custom_blob/…, без паттернов).
     """
     blobs = []
     if not os.path.isdir(fake_dir):
@@ -980,6 +1009,7 @@ def _scan_quic_blobs(fake_dir):
         if fname.startswith(("quic_", "QUIC_", "fake_quic_", "discord_udp_",
                              "wg_initial_fake_", "stun")):
             blobs.append(fname)
+    blobs.extend(_scan_custom_blobs(fake_dir))
     return blobs
 
 
@@ -1055,13 +1085,15 @@ def _apply_tls_blob(cfg_text, blob):
 #     и menu_action_wg_repeats + webui/cgi-bin/_lib.sh: api_wg_blob_*) --------
 
 def _scan_wg_blobs(fake_dir):
-    """Сканирует директорию fake для wg_initial_fake_* (menu_action_set_wg_blob)."""
+    """Сканирует директорию fake для wg_initial_fake_* (menu_action_set_wg_blob)
+    плюс «Свои блобы» (custom_blob/…)."""
     blobs = []
     if not os.path.isdir(fake_dir):
         return blobs
     for fname in sorted(os.listdir(fake_dir)):
         if fname.startswith("wg_initial_fake_"):
             blobs.append(fname)
+    blobs.extend(_scan_custom_blobs(fake_dir))
     return blobs
 
 
@@ -1632,6 +1664,7 @@ class FakeRouterState:
         self.sni_overrides = {}
         # лимит клонов (clonesize.tsv): profile -> байты ("" = без ограничения)
         self.clone_sizes = {}
+        self.blob_vers = {}
         for f in (self.lock_file, self.lock_manual_file):
             open(f, "w", encoding="utf-8").close()
 
@@ -2011,6 +2044,7 @@ class FakeRouterState:
             "profile_modes": self.build_fake_mode_modes(),
             "profile_snis": self.build_fake_mode_snis(),
             "profile_sizes": self.build_clone_size_sizes(),
+            "profile_vers": self.build_blob_vers(),
         }
 
     def build_tls_blob_profile_blobs(self):
@@ -2035,6 +2069,29 @@ class FakeRouterState:
     def build_clone_size_sizes(self):
         """clone_size_get() — profile_sizes для GET-ответов ("" = без ограничения)."""
         return {p: self.clone_sizes.get(p, "") for p in BLOB_PROFILE_IDS}
+
+    def build_blob_vers(self):
+        return {p: self.blob_vers.get(p, "") for p in BLOB_PROFILE_IDS}
+
+    def apply_tls_blob_ver(self, profile, value):
+        if profile == "all":
+            if value in ("", "global"):
+                self.blob_vers = {}
+            elif value in ("01", "02", "03", "04", "orig"):
+                for p in BLOB_PROFILE_IDS:
+                    self.blob_vers[p] = value
+            else:
+                raise ValueError("Некорректная версия: 01|02|03|04|orig")
+            return {"ok": True, "restarted": True, "restart_required": True}
+        if profile not in BLOB_PROFILE_IDS:
+            raise ValueError("Некорректный профиль: {0}".format(profile))
+        if value in ("", "global"):
+            self.blob_vers.pop(profile, None)
+            return {"ok": True, "restarted": True, "restart_required": True}
+        if value not in ("01", "02", "03", "04", "orig"):
+            raise ValueError("Некорректная версия: 01|02|03|04|orig")
+        self.blob_vers[profile] = value
+        return {"ok": True, "restarted": True, "restart_required": True}
 
     def apply_clone_size(self, profile, value):
         """api_clone_size_set() — _lib.sh. Рестарта нет: рантайм-переключение."""
@@ -2072,7 +2129,12 @@ class FakeRouterState:
                 raise ValueError("fake_default_tls неприменим к QUIC-профилю (только TLS-профили)")
             self.blob_overrides[profile] = value
             return {"ok": True, "restarted": False, "restart_required": False}
-        if profile == "5":
+        if value.startswith("custom_blob/"):
+            # «Свои блобы»: basename-паттерны не применяются (как в
+            # blob_override_file_valid / api_tls_blob_profile_set)
+            if not _custom_blob_base_ok(value.split("/", 1)[1]):
+                raise ValueError("Некорректное значение блоба: {0}".format(value))
+        elif profile == "5":
             # Кандидаты QUIC: тот же фильтр, что blob_override_file_valid 5.
             if not (value.endswith(".bin") and value.startswith(
                     ("quic_", "QUIC_", "fake_quic_", "discord_udp_", "wg_initial_fake_", "stun"))):
@@ -2096,7 +2158,11 @@ class FakeRouterState:
             self.cfg_text = _apply_tls_blob_default(self.cfg_text)
             self._save_config()
             return {"ok": True, "restarted": self._apply_restart()}
-        if not (blob.startswith("tls_") and blob.endswith(".bin")) and blob != "custom_tls.bin":
+        if blob.startswith("custom_blob/"):
+            # «Свои блобы»: без basename-паттернов (как в api_tls_blob_set)
+            if not _custom_blob_base_ok(blob.split("/", 1)[1]):
+                raise ValueError("Некорректное значение блоба: {0}".format(blob))
+        elif not (blob.startswith("tls_") and blob.endswith(".bin")) and blob != "custom_tls.bin":
             raise ValueError("Некорректное значение блоба: {0}".format(blob))
         if not os.path.isfile(os.path.join(self.fake_dir, blob)):
             raise ValueError("Файл блоба не существует: {0}".format(blob))
@@ -2121,8 +2187,11 @@ class FakeRouterState:
 
     def apply_wg_blob(self, blob, restart=True):
         """api_wg_blob_set() — _lib.sh."""
-        # Валидация: только wg_initial_fake_*
-        if not blob.startswith("wg_initial_fake_"):
+        # Валидация: wg_initial_fake_* либо «Свой блоб» custom_blob/<файл>
+        if blob.startswith("custom_blob/"):
+            if not _custom_blob_base_ok(blob.split("/", 1)[1]):
+                raise ValueError("Некорректное значение блоба")
+        elif not blob.startswith("wg_initial_fake_"):
             raise ValueError("Некорректное значение блоба")
         if not os.path.isfile(os.path.join(self.fake_dir, blob)):
             raise ValueError("Файл блоба не существует")
@@ -3387,6 +3456,18 @@ class FakeRouterHandler(BaseHTTPRequestHandler):
                     with self.state.lock:
                         result = self.state.apply_fake_mode(profile, value)
                         self._log("POST {0} | fake_mode={1} value={2}".format(
+                            parsed.path, profile, value))
+                        self._send_json(result)
+                except ValueError as e:
+                    self._send_error_json(400, str(e))
+                return
+            if setting == "tls_blob_ver":
+                profile = params.get("profile", "")
+                value = params.get("value", "")
+                try:
+                    with self.state.lock:
+                        result = self.state.apply_tls_blob_ver(profile, value)
+                        self._log("POST {0} | tls_blob_ver={1} value={2}".format(
                             parsed.path, profile, value))
                         self._send_json(result)
                 except ValueError as e:
