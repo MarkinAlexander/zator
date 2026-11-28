@@ -24,7 +24,7 @@ function verdictClass(verdict: string | undefined) {
 
 function lineClass(state: string | undefined) {
   if (state === 'ok' || state === 'http') return 'ok'
-  if (state === 'aborted') return ''
+  if (state === 'aborted' || state === 'noaddr') return ''
   return 'bad'
 }
 
@@ -53,6 +53,11 @@ function hasVerdict(item: CheckItem) {
           <span v-if="item.tls12_detail" :class="lineClass(item.tls12_detail.state)">{{ item.tls12_detail.text || 'TLS 1.2' }}</span>
           <span v-if="item.tls13_detail" :class="lineClass(item.tls13_detail.state)">{{ item.tls13_detail.text || 'TLS 1.3' }}</span>
           <span v-if="item.download" :class="downloadClass(item.download.state)">{{ item.download.text || 'Данные' }}</span>
+          <template v-if="item.v6">
+            <span v-if="item.v6.tls12_detail" :class="lineClass(item.v6.tls12_detail.state)">{{ item.v6.tls12_detail.text || 'TLS 1.2 IPv6' }}</span>
+            <span v-if="item.v6.tls13_detail" :class="lineClass(item.v6.tls13_detail.state)">{{ item.v6.tls13_detail.text || 'TLS 1.3 IPv6' }}</span>
+            <span v-if="item.v6.download" :class="downloadClass(item.v6.download.state)">{{ item.v6.download.text || 'Данные IPv6' }}</span>
+          </template>
         </template>
         <template v-else>
           <span :class="item.tls12 ? 'ok' : 'bad'">TLS 1.2: {{ item.tls12 ? 'OK' : 'FAIL' }}</span>

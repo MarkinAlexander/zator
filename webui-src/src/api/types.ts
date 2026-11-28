@@ -49,6 +49,17 @@ export interface CheckDetail {
   state?: string
 }
 
+// IPv6-часть проверки (null — v6 нет или у домена нет AAAA).
+export interface CheckV6 {
+  tls12?: boolean
+  tls13?: boolean
+  verdict?: string
+  text?: string
+  tls12_detail?: CheckDetail
+  tls13_detail?: CheckDetail
+  download?: CheckDetail
+}
+
 export interface CheckItem {
   label?: string
   target?: string
@@ -59,6 +70,7 @@ export interface CheckItem {
   tls12_detail?: CheckDetail
   tls13_detail?: CheckDetail
   download?: CheckDetail
+  v6?: CheckV6 | null
 }
 
 export interface CheckPayload {

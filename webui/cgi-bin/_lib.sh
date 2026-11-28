@@ -410,7 +410,7 @@ strategy_locks_status_text() {
 }
 
 _tls_detail_json() {
-  local raw="$1" ver="$2"
+  local raw="$1" ver="$2" fam="${3:-}"
   local code
   code="$(z2r_tls_field "$raw" 2)"
   case "$code" in ''|*[!0-9]*) code=0 ;; *) code=$((10#$code)) ;; esac
@@ -420,13 +420,31 @@ _tls_detail_json() {
     "$(json_escape "$(z2r_tls_field "$raw" 4)")" \
     "$(json_escape "$(z2r_tls_field "$raw" 5)")" \
     "$(z2r_tls_version_state "$(z2r_tls_field "$raw" 1)" "$(z2r_tls_field "$raw" 2)")" \
-    "$(json_escape "$(z2r_tls_version_text "$ver" "$raw")")"
+    "$(json_escape "$(z2r_tls_version_text "$ver" "$raw" "$fam")")"
+}
+
+_check_download_json() {
+  local dl="$1" dlcode dlsize dltime
+  dlcode="$(z2r_tls_field "$dl" 2)"
+  dlsize="$(z2r_tls_field "$dl" 3)"
+  dltime="$(z2r_tls_field "$dl" 4)"
+  case "$dlcode" in ''|*[!0-9]*) dlcode=0 ;; *) dlcode=$((10#$dlcode)) ;; esac
+  case "$dlsize" in ''|*[!0-9]*) dlsize=0 ;; *) dlsize=$((10#$dlsize)) ;; esac
+  printf '{"code":%s,"size":%s,"time":"%s","state":"%s","text":"%s"}' \
+    "$dlcode" "$dlsize" "$(json_escape "$dltime")" \
+    "$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "$dlcode" "$dlsize")" \
+    "$(json_escape "$(z2r_tls_download_text "$dl")")"
 }
 
 check_one_target_json() {
   local label="$1" target="$2"
-  local out v12 v13 dl s12 s13 b12 b13 verdict dlcode dlsize dltime dljson
-  out="$(z2r_tls_check_target "$target")"
+  local out v12 v13 dl v12_6 v13_6 dl_6 s12 s13 b12 b13 verdict dljson v6json
+  local s12_6 s13_6 b12_6 b13_6 verdict6 dlcode dlsize dltime
+  if z2r_ipv6_available; then
+    out="$(z2r_tls_check_target_dual "$target")"
+  else
+    out="$(z2r_tls_check_target "$target")"
+  fi
   v12="$(printf '%s\n' "$out" | sed -n 1p)"
   v13="$(printf '%s\n' "$out" | sed -n 2p)"
   dl="$(printf '%s\n' "$out" | sed -n 3p)"
@@ -437,20 +455,33 @@ check_one_target_json() {
   verdict="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
   dljson="null"
   if [ "$dl" != "skip" ]; then
-    dlcode="$(z2r_tls_field "$dl" 2)"
-    dlsize="$(z2r_tls_field "$dl" 3)"
-    dltime="$(z2r_tls_field "$dl" 4)"
-    case "$dlcode" in ''|*[!0-9]*) dlcode=0 ;; *) dlcode=$((10#$dlcode)) ;; esac
-    case "$dlsize" in ''|*[!0-9]*) dlsize=0 ;; *) dlsize=$((10#$dlsize)) ;; esac
-    dljson="$(printf '{"code":%s,"size":%s,"time":"%s","state":"%s","text":"%s"}' \
-      "$dlcode" "$dlsize" "$(json_escape "$dltime")" \
-      "$(z2r_tls_download_state "$(z2r_tls_field "$dl" 1)" "$dlcode" "$dlsize")" \
-      "$(json_escape "$(z2r_tls_download_text "$dl")")")"
+    dljson="$(_check_download_json "$dl")"
   fi
-  printf '{"label":"%s","target":"%s","tls12":%s,"tls13":%s,"verdict":"%s","text":"%s","tls12_detail":%s,"tls13_detail":%s,"download":%s}' \
+  v6json="null"
+  if z2r_ipv6_available; then
+    v12_6="$(printf '%s\n' "$out" | sed -n 4p)"
+    v13_6="$(printf '%s\n' "$out" | sed -n 5p)"
+    dl_6="$(printf '%s\n' "$out" | sed -n 6p)"
+    if [ -n "$v12_6" ] && [ "${v12_6%%|*}" != "N" ]; then
+      s12_6="$(z2r_tls_version_state "$(z2r_tls_field "$v12_6" 1)" "$(z2r_tls_field "$v12_6" 2)")"
+      s13_6="$(z2r_tls_version_state "$(z2r_tls_field "$v13_6" 1)" "$(z2r_tls_field "$v13_6" 2)")"
+      case "$s12_6" in ok|http) b12_6=1 ;; *) b12_6=0 ;; esac
+      case "$s13_6" in ok|http) b13_6=1 ;; *) b13_6=0 ;; esac
+      verdict6="$(z2r_tls_target_verdict "$v12_6" "$v13_6" "$dl_6")"
+      verdict="$(z2r_tls_verdict_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6")"
+      v6json="$(printf '{"tls12":%s,"tls13":%s,"verdict":"%s","text":"%s","tls12_detail":%s,"tls13_detail":%s,"download":%s}' \
+        "$b12_6" "$b13_6" \
+        "${verdict6%%|*}" "$(json_escape "${verdict6#*|}")" \
+        "$(_tls_detail_json "$v12_6" 1.2 IPv6)" "$(_tls_detail_json "$v13_6" 1.3 IPv6)" \
+        "$([ "$dl_6" != "skip" ] && _check_download_json "$dl_6" || echo null)")"
+    else
+      verdict="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
+    fi
+  fi
+  printf '{"label":"%s","target":"%s","tls12":%s,"tls13":%s,"verdict":"%s","text":"%s","tls12_detail":%s,"tls13_detail":%s,"download":%s,"v6":%s}' \
     "$(json_escape "$label")" "$(json_escape "$target")" "$b12" "$b13" \
     "${verdict%%|*}" "$(json_escape "${verdict#*|}")" \
-    "$(_tls_detail_json "$v12" 1.2)" "$(_tls_detail_json "$v13" 1.3)" "$dljson"
+    "$(_tls_detail_json "$v12" 1.2)" "$(_tls_detail_json "$v13" 1.3)" "$dljson" "$v6json"
 }
 
 check_one_dns_json() {

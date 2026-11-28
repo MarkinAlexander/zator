@@ -1898,22 +1898,24 @@ class FakeRouterState:
     def _domains_check(self, domain):
         return {"results": [self._check_item(domain, "https://{0}/".format(domain), 0)]}
 
-    def _version_detail(self, ok, ver):
+    def _version_detail(self, ok, ver, fam=""):
         if ver == "1.2":
             why = "важно для ТВ и т.п."
         else:
             why = "важно в основном для всего современного"
+        ip = "2001:db8::1" if fam else "203.0.113.1"
+        label = "{0} (IPv6)".format(ver) if fam else ver
         if ok:
             return {
                 "code": 200,
                 "proto": "HTTP/2",
                 "time": "0.8",
-                "ip": "203.0.113.1",
+                "ip": ip,
                 "state": "ok",
-                "text": "Есть ответ по TLS {0} ({1}): HTTP/2 200 за 0.8 с".format(ver, why),
+                "text": "Есть ответ по TLS {0} ({1}): HTTP/2 200 за 0.8 с".format(label, why),
             }
         text = ("Нет ответа по TLS {0} ({1}) Таймаут 5сек. "
-                "Проверьте доступность вручную. Возможно ошибка теста.").format(ver, why)
+                "Проверьте доступность вручную. Возможно ошибка теста.").format(label, why)
         return {"code": 0, "proto": "-", "time": "-", "ip": "-",
                 "state": "timeout", "text": text}
 
@@ -1980,6 +1982,15 @@ class FakeRouterState:
             verdict = "warn"
             text = ("Сайт отвечает только по TLS 1.2 — TLS 1.3 недоступен, "
                     "современные браузеры могут не открыться. Проверьте вручную.")
+        v6 = {
+            "tls12": t12,
+            "tls13": t13,
+            "verdict": verdict,
+            "text": text,
+            "tls12_detail": self._version_detail(t12, "1.2", fam="IPv6"),
+            "tls13_detail": self._version_detail(t13, "1.3", fam="IPv6"),
+            "download": download,
+        }
         return {
             "label": label,
             "target": target,
@@ -1990,6 +2001,7 @@ class FakeRouterState:
             "tls12_detail": d12,
             "tls13_detail": d13,
             "download": download,
+            "v6": v6,
         }
 
     def build_check(self):

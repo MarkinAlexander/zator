@@ -262,11 +262,35 @@ orch_ask_sweep_tls_pref() {
     return 0
 }
 
-# Диалог автопрогона (режим → требуемый TLS → интервал паузы) и запуск.
+# Таймаут проверок автопрогона: Enter - оставить как есть, 0 - отмена,
+# иначе целое 1..60 (HEAD-таймаут; докачка масштабируется вдвое).
+orch_ask_sweep_timeout() {
+    local ans
+    echo "Таймаут влияет на проверку: больше — для медленных стратегий (wssize, дальние узлы), меньше — для быстрой отбраковки." >&2
+    while true; do
+        read -re -p "Таймаут проверки, сек (Enter - оставить как есть, сейчас ${Z2R_TLS_MAX_TIME:-5}; 0 - отмена): " ans || ans=""
+        case "$ans" in
+            0) echo "0"; return 0 ;;
+            '') return 0 ;;
+            *[!0-9]*)
+                echo -e "${yellow}Неверный ввод: нужно целое число секунд от 1 до 60.${plain}" >&2
+                ;;
+            *)
+                if z2r_tls_timeouts_set "$ans"; then
+                    echo "$ans"
+                    return 0
+                fi
+                echo -e "${yellow}Число должно быть от 1 до 60.${plain}" >&2
+                ;;
+        esac
+    done
+}
+
+# Диалог автопрогона (режим → требуемый TLS → таймаут → интервал паузы) и запуск.
 # 0 на любом вопросе = отмена.
 orch_run_auto_sweep() {
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6"
-    local mode tls_pref pause_total
+    local mode tls_pref pause_total t_out
     local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
     if [ "$kind" = profile ] && [ "$key" = 2 ] && type z2r_media_ask_video >/dev/null 2>&1; then
         Z2R_MEDIA_VIDEO_ID=$(z2r_media_ask_video) || { echo 'Отмена.'; return 0; }
@@ -282,6 +306,13 @@ orch_run_auto_sweep() {
 
     tls_pref="$(orch_ask_sweep_tls_pref)"
     if [ -z "$tls_pref" ]; then
+        echo "Отмена."
+        pause_enter
+        return 0
+    fi
+
+    t_out="$(orch_ask_sweep_timeout)"
+    if [ "$t_out" = "0" ]; then
         echo "Отмена."
         pause_enter
         return 0
@@ -348,6 +379,25 @@ orch_gv_trial() (
     completed=1
 )
 
+# Бейдж одной TLS-версии для строки автопрогона (окрашенный, ширина 17).
+_orch_badge_line() {
+    local badge btxt bst bcol
+    badge="$(z2r_tls_version_badge "$1" "$2")"
+    btxt="${badge%%|*}"; bst="${badge#*|}"
+    case "$bst" in
+        ok) bcol="$green" ;;
+        http) if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then bcol="$green"; else bcol="$yellow"; fi ;;
+        fail) bcol="$red" ;;
+        *) bcol="$plain" ;;
+    esac
+    printf '%b%-17s%b' "$bcol" "$btxt" "$plain"
+}
+
+# Лучшая по скорости докачки внутри одного семейного пула (dual|v4|v6).
+_orch_best_by_fam() {
+    printf '%s\n' "$1" | awk -F'|' -v want="$2" 'BEGIN{max=-1} $5==want {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}'
+}
+
 # Автопрогон стратегий: применяет локи по очереди и проверяет каждую одним
 # прогоном движка z2r_tls_* (компактная строка на стратегию), затем сводка
 # и выбор сохранения. kind=profile|domain; key=профиль или домен.
@@ -362,15 +412,17 @@ orch_auto_sweep() {
         return 0
     fi
     local kind="$1" key="$2" proto_list="$3" test_url="$4" start="$5" max="$6" stop_on_ok="$7"
-    local s p out v12 v13 dl short token color vcolor
-    local ok_list="" warn_list="" n_ok=0 n_warn=0 n_fail=0 n_unknown=0
+    local s p out v12 v13 dl v12_6 v13_6 dl_6 short token color vcolor
+    local s4 s6 s4tok s6tok famm mfam v6_on=0 v6_used=0 dluse
+    local ok_list="" warn_list="" ok6_list="" n_ok=0 n_warn=0 n_fail=0 n_unknown=0
+    local n_a12=0 n_a13=0 n_a12_6=0 n_a13_6=0
     local psleep
     local ok_stats="" best="" best_short=""
     local full_list="" full_stats="" best_full="" best_full_short=""
-    local warn_stats="" best_from_warn=0 n_a12=0 n_a13=0
+    local warn_stats="" best_from_warn=0
     local prev_str="" interrupted=0 svc_was_running=0
     local -A prev_map
-    local code12 code13 q12 q13 badge btxt bst bcol line12 line13
+    local code12 code13 q12 q13 badge btxt bst bcol line12 line13 line12_6 line13_6
 
     # case-проверка всей строки: grep -E '^[0-9]+$' построчный и пропускает
     # многострочный мусор, у которого одна из строк — число.
@@ -405,7 +457,7 @@ orch_auto_sweep() {
     fi
 
     local total=$((max - start + 1))
-    echo -e "${cyan}Автопрогон: стратегии ${start}-${max} (${total} шт., примерно $((total * 5 + (total - 1) * pause_sec)) сек, пауза ${pause_sec} сек между стратегиями${goal_txt}). Ctrl+C - прервать.${plain}"
+    echo -e "${cyan}Автопрогон: стратегии ${start}-${max} (${total} шт., примерно $((total * 5 + (total - 1) * pause_sec)) сек, пауза ${pause_sec} сек между стратегиями, таймаут ${Z2R_TLS_MAX_TIME} сек${goal_txt}). Ctrl+C - прервать.${plain}"
     # Ctrl+C не должен ронять скрипт: под set -e прерванный curl/sleep завершает
     # всю функцию раньше флага. Отключаем -e на время прогона и восстанавливаем.
     local had_e=0
@@ -434,6 +486,8 @@ orch_auto_sweep() {
             done
         fi
 
+        v12_6=""; v13_6=""; dl_6=""; s4tok=""; s6tok=""
+        v6_on=0; famm="v4"; mfam=""
         if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
             _supersweep_settle
             out="$(z2r_media_target "$s" "$tls_pref")" || {
@@ -441,11 +495,40 @@ orch_auto_sweep() {
                 orch_auto_sweep_interrupted=1
                 break
             }
-            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; IFS= read -r mfam; } <<< "$out"
+            case "$mfam" in
+                "family|-6")
+                    famm="v6"
+                    short="${short%%|*}|${short#*|} (IPv6)"
+                    ;;
+            esac
         else
-            out="$(z2r_tls_check_target "$test_url")"
+            if z2r_ipv6_available; then
+                out="$(z2r_tls_check_target_dual "$test_url")"
+            else
+                out="$(z2r_tls_check_target "$test_url")"
+            fi
             { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
-            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            if z2r_ipv6_available; then
+                { IFS= read -r v12_6; IFS= read -r v13_6; IFS= read -r dl_6; } <<< "$out"
+                if [ -n "$v12_6" ] && [ "${v12_6%%|*}" != "N" ]; then
+                    v6_on=1
+                fi
+            fi
+            if [ "$v6_on" = 1 ]; then
+                short="$(z2r_tls_short_result_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
+                s4="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+                s6="$(z2r_tls_short_result "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
+                s4tok="${s4%%|*}"; s6tok="${s6%%|*}"
+                if [ "$s4tok" = "ok" ] && [ "$s6tok" = "ok" ]; then
+                    famm="dual"
+                elif [ "$s4tok" != "ok" ] && [ "$s6tok" = "ok" ]; then
+                    famm="v6"
+                    dl="$dl_6"
+                fi
+            else
+                short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            fi
             if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then
                 short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
             fi
@@ -470,52 +553,55 @@ orch_auto_sweep() {
         case "$(z2r_tls_version_state "$(z2r_tls_field "$v13" 1)" "$(z2r_tls_field "$v13" 2)")" in
             ok|http) n_a13=$((n_a13 + 1)) ;;
         esac
+        if [ "$v6_on" = 1 ]; then
+            v6_used=1
+            case "$(z2r_tls_version_state "$(z2r_tls_field "$v12_6" 1)" "$(z2r_tls_field "$v12_6" 2)")" in
+                ok|http) n_a12_6=$((n_a12_6 + 1)) ;;
+            esac
+            case "$(z2r_tls_version_state "$(z2r_tls_field "$v13_6" 1)" "$(z2r_tls_field "$v13_6" 2)")" in
+                ok|http) n_a13_6=$((n_a13_6 + 1)) ;;
+            esac
+            [ "$s6tok" = "ok" ] && ok6_list="${ok6_list}${ok6_list:+ }${s}"
+        fi
 
+        dluse="$dl"
+        [ "$famm" = "v6" ] && dluse="$dl_6"
         case "$token" in
             ok)
                 color="$green"; disp="OK  "; n_ok=$((n_ok + 1)); ok_list="${ok_list}${ok_list:+ }${s}"
-                dlsize2="$(z2r_tls_field "$dl" 3)"; dltime2="$(z2r_tls_field "$dl" 4)"
+                dlsize2="$(z2r_tls_field "$dluse" 3)"; dltime2="$(z2r_tls_field "$dluse" 4)"
                 if [ "$q12" = "1" ] && [ "$q13" = "1" ]; then
                     full_list="${full_list}${full_list:+ }${s}"
                 fi
-                if [ "$dl" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
-                    ok_stats="${ok_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                if [ "$dluse" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                    ok_stats="${ok_stats}${s}|${dltime2}|${dlsize2}|${short}|${famm}"$'\n'
                     if [ "$q12" = "1" ] && [ "$q13" = "1" ]; then
-                        full_stats="${full_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                        full_stats="${full_stats}${s}|${dltime2}|${dlsize2}|${short}|${famm}"$'\n'
                     fi
                 fi
                 ;;
             warn)
                 color="$yellow"; disp="WARN"; n_warn=$((n_warn + 1)); warn_list="${warn_list}${warn_list:+ }${s}"
-                dlsize2="$(z2r_tls_field "$dl" 3)"; dltime2="$(z2r_tls_field "$dl" 4)"
-                if [ "$dl" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
-                    warn_stats="${warn_stats}${s}|${dltime2}|${dlsize2}|${short}"$'\n'
+                dlsize2="$(z2r_tls_field "$dluse" 3)"; dltime2="$(z2r_tls_field "$dluse" 4)"
+                if [ "$dluse" != "skip" ] && printf '%s' "$dltime2" | grep -Eq '^[0-9]+\.?[0-9]*$'; then
+                    warn_stats="${warn_stats}${s}|${dltime2}|${dlsize2}|${short}|${famm}"$'\n'
                 fi
                 ;;
             unknown) color="$yellow"; disp="UNKNOWN"; n_unknown=$((n_unknown + 1)) ;;
             *) color="$red"; disp="FAIL"; token="fail"; n_fail=$((n_fail + 1)) ;;
         esac
 
-        badge="$(z2r_tls_version_badge "tls1.2" "$v12")"
-        btxt="${badge%%|*}"; bst="${badge#*|}"
-        case "$bst" in
-            ok) bcol="$green" ;;
-            http) if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then bcol="$green"; else bcol="$yellow"; fi ;;
-            fail) bcol="$red" ;;
-            *) bcol="$plain" ;;
-        esac
-        line12="$(printf '%b%-17s%b' "$bcol" "$btxt" "$plain")"
-        badge="$(z2r_tls_version_badge "tls1.3" "$v13")"
-        btxt="${badge%%|*}"; bst="${badge#*|}"
-        case "$bst" in
-            ok) bcol="$green" ;;
-            http) if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then bcol="$green"; else bcol="$yellow"; fi ;;
-            fail) bcol="$red" ;;
-            *) bcol="$plain" ;;
-        esac
-        line13="$(printf '%b%-17s%b' "$bcol" "$btxt" "$plain")"
-        printf '%s %3d: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
-            "${color}${disp}${plain}" "$line12" "$line13" "${color}${short}${plain}"
+        line12="$(_orch_badge_line tls1.2 "$v12")"
+        line13="$(_orch_badge_line tls1.3 "$v13")"
+        if [ "$v6_on" = 1 ]; then
+            line12_6="$(_orch_badge_line "v6 1.2" "$v12_6")"
+            line13_6="$(_orch_badge_line "v6 1.3" "$v13_6")"
+            printf '%s %3d: %b %b %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
+                "${color}${disp}${plain}" "$line12" "$line13" "$line12_6" "$line13_6" "${color}${short}${plain}"
+        else
+            printf '%s %3d: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
+                "${color}${disp}${plain}" "$line12" "$line13" "${color}${short}${plain}"
+        fi
 
         if [ "$stop_on_ok" = "1" ] && [ "$token" = "ok" ]; then
             break
@@ -553,9 +639,13 @@ orch_auto_sweep() {
     best=""
     best_short=""
     if [ -n "$ok_stats" ]; then
-        win="$(printf '%s' "$ok_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
-        best="${win%%|*}"
-        best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+        win="$(_orch_best_by_fam "$ok_stats" dual)"
+        [ -n "$win" ] || win="$(_orch_best_by_fam "$ok_stats" v4)"
+        [ -n "$win" ] || win="$(_orch_best_by_fam "$ok_stats" v6)"
+        if [ -n "$win" ]; then
+            best="${win%%|*}"
+            best_short="$(printf '%s' "$win" | cut -d'|' -f4)"
+        fi
     fi
     if [ -z "$best" ] && [ -n "$ok_list" ]; then
         best="${ok_list%% *}"
@@ -568,7 +658,7 @@ orch_auto_sweep() {
         if [ -n "$warn_stats" ]; then
             win="$(printf '%s' "$warn_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
             best="${win%%|*}"
-            best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+            best_short="$(printf '%s' "$win" | cut -d'|' -f4)"
         fi
     fi
 
@@ -579,7 +669,7 @@ orch_auto_sweep() {
     if [ -n "$full_stats" ]; then
         win="$(printf '%s' "$full_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
         best_full="${win%%|*}"
-        best_full_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+        best_full_short="$(printf '%s' "$win" | cut -d'|' -f4)"
     fi
 
     echo ""
@@ -590,6 +680,11 @@ orch_auto_sweep() {
         echo -e " Полные (TLS 1.2 и 1.3): ${green}${full_list}${plain}"
     fi
     [ -n "$warn_list" ] && echo -e " Жёлтые стратегии: ${yellow}${warn_list}${plain}"
+    if [ -n "$ok6_list" ]; then
+        echo -e " Зелёные (IPv6): ${green}${ok6_list}${plain}"
+    elif [ "$v6_used" = 1 ]; then
+        echo -e " ${yellow}IPv6 не прошёл ни одной стратегией — цель недоступна и по v6 (или у доменов нет AAAA-записей).${plain}"
+    fi
     [ "$n_unknown" = 0 ] || echo " Media UNKNOWN: $n_unknown (не участвуют в выборе победителя)."
     if [ -n "$best" ]; then
         if [ "$best_from_warn" = "1" ]; then

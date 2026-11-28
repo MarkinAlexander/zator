@@ -234,6 +234,8 @@ supersweep_probe_start() {
         printf 'FILTER_MARK=%s\n' "${FILTER_MARK:-0}"
         printf 'CLIENT_SCOPE_MARK_MASK=%s\n' "${CLIENT_SCOPE_MARK_MASK:-0}"
     } > "$dir/transport.env" 2>/dev/null || : && chmod 644 "$dir/transport.env" 2>/dev/null
+    # Транспорт пробника — только iptables (v4): v6-проверки в изоляции выключены.
+    export Z2R_IPV6_AVAILABLE=0
     export Z2R_TLS_LOCAL_PORTS=62000-62999
 }
 

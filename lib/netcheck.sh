@@ -35,6 +35,72 @@ Z2R_TLS_DL_MAX_TIME=10
 Z2R_TLS_DL_SPEED_LIMIT=2048
 Z2R_TLS_DL_SPEED_TIME=1
 
+# Таймаут проверок задаётся интерактивно (п.01, автопрогон, суперсвип):
+# HEAD = T, докачка = 2T; connect-timeout не трогаем.
+z2r_tls_timeouts_set() {
+    local t="$1"
+    case "$t" in ''|*[!0-9]*) return 2 ;; esac
+    [ "$t" -ge 1 ] && [ "$t" -le 60 ] || return 2
+    Z2R_TLS_MAX_TIME="$t"
+    Z2R_TLS_DL_MAX_TIME=$((t * 2))
+    export Z2R_TLS_MAX_TIME Z2R_TLS_DL_MAX_TIME
+}
+
+# --- IPv6 ---
+
+# rc: 0 = v6 есть. Z2R_IPV6_AVAILABLE=1|0 — явный override (тесты, изолированный
+# прогон: транспорт iptables только v4). Результат кешируется на процесс.
+z2r_ipv6_available() {
+    case "${Z2R_IPV6_AVAILABLE:-}" in
+        1|yes|true) return 0 ;;
+        0|no|false|off) return 1 ;;
+    esac
+    if [ -n "${Z2R_IPV6_STATE:-}" ]; then
+        [ "$Z2R_IPV6_STATE" = "1" ]
+        return
+    fi
+    local ok=0
+    if command -v ip >/dev/null 2>&1; then
+        if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
+            ok=1
+            ip -6 route show default 2>/dev/null | grep -q . || ok=0
+        fi
+    elif [ -r /proc/net/if_inet6 ]; then
+        awk '{c=substr($1,1,1); if (c=="2"||c=="3") f=1} END{exit !f}' /proc/net/if_inet6 2>/dev/null && ok=1
+    fi
+    Z2R_IPV6_STATE="$ok"
+    [ "$ok" = 1 ]
+}
+
+z2r_ipv6_config_disabled() {
+    local cfg="${1:-${ZAPRET2_ROOT:-/opt/zapret2}/config}"
+    [ -f "$cfg" ] || return 1
+    grep -qE '^DISABLE_IPV6="?1"?' "$cfg"
+}
+
+# rc: 0 = AAAA есть, 1 = нет AAAA, 2 = DoH недоступен (решает сам curl -6).
+# Результат кешируется на процесс по домену; используется как гейт -6 проб.
+z2r_ipv6_aaaa() {
+    local domain="$1" key var cached out r
+    key="$(printf '%s' "$domain" | tr -c 'A-Za-z0-9' '_')"
+    var="Z2R_AAAA_$key"
+    cached="${!var:-}"
+    case "$cached" in
+        0|1|2) return "$cached" ;;
+    esac
+    r=2
+    for src in "https://dns.google/resolve?name=$domain&type=AAAA" "https://8.8.8.8/resolve?name=$domain&type=AAAA"; do
+        out="$(curl -4 -s --connect-timeout 3 --max-time 5 -A "$Z2R_CURL_UA" "$src" 2>/dev/null)" || out=""
+        if [ -n "$out" ]; then
+            if printf '%s' "$out" | grep -qE '"data":"[0-9A-Fa-f]*:[0-9A-Fa-f:]*"'; then r=0; else r=1; fi
+            break
+        fi
+    done
+    printf -v "$var" '%s' "$r"
+    return "$r"
+}
+
+
 # Функции движка всегда возвращают 0 (вызовы под set -e в z2r.sh):
 # код возврата curl передаётся внутри данных, а не статусом функции.
 
@@ -66,10 +132,12 @@ z2r_tls_curl() {
 }
 
 z2r_tls_head_once() {
-    local url="$1" hdr="$2"; shift 2
-    local out rc
+    local url="$1" hdr="$2" fam out rc
+    shift 2
+    fam="${1:--4}"
+    case "$fam" in -4|-6) shift ;; esac
     rc=0
-    out="$(z2r_tls_curl -4 -s -L -k -g -I -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(z2r_tls_curl "$fam" -s -L -k -g -I -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_MAX_TIME" \
         -D "$hdr" -w '%{time_total} %{remote_ip}' \
         "$@" "$url" 2>/dev/null)" || rc=$?
@@ -77,7 +145,7 @@ z2r_tls_head_once() {
 }
 
 z2r_tls_probe_version() (
-    local url="$1" ver="$2" flags tmp hdr="${3:-}" raw rc rest time ip first proto code
+    local url="$1" ver="$2" flags tmp hdr="${3:-}" fam="${4:--4}" raw rc rest time ip first proto code
     case "$ver" in
         12) flags="--tlsv1.2 --tls-max 1.2" ;;
         13) flags="--tlsv1.3" ;;
@@ -92,7 +160,7 @@ z2r_tls_probe_version() (
     trap 'exit 130' INT
     trap 'exit 143' TERM
     : >"$hdr"
-    raw="$(z2r_tls_head_once "$url" "$hdr" $flags)"
+    raw="$(z2r_tls_head_once "$url" "$hdr" "$fam" $flags)"
     rc="${raw%%|*}"; rest="${raw#*|}"
     case "$rest" in
         *' '*) time="${rest%% *}"; ip="${rest##* }" ;;
@@ -106,10 +174,10 @@ z2r_tls_probe_version() (
 )
 
 z2r_tls_probe_download() {
-    local url="$1" out rc code rest size time
+    local url="$1" fam="${2:--4}" out rc code rest size time
     rc=0
 
-    out="$(z2r_tls_curl -4 -s -L -k -g -o /dev/null -A "$Z2R_CURL_UA" \
+    out="$(z2r_tls_curl "$fam" -s -L -k -g -o /dev/null -A "$Z2R_CURL_UA" \
         --connect-timeout "$Z2R_TLS_CONNECT_TIMEOUT" --max-time "$Z2R_TLS_DL_MAX_TIME" \
         --speed-limit "$Z2R_TLS_DL_SPEED_LIMIT" --speed-time "$Z2R_TLS_DL_SPEED_TIME" \
         -H "Range: bytes=0-$((Z2R_TLS_DL_RANGE - 1))" \
@@ -161,6 +229,7 @@ z2r_tls_version_state() {
     else
         case "$_z2r_rc" in
             X) _z2r_state=aborted ;;
+            N) _z2r_state=noaddr ;;
             6) _z2r_state=dns ;;
             28) _z2r_state=timeout ;;
             7) _z2r_state=conn ;;
@@ -219,7 +288,7 @@ z2r_tls_poll_sleep() {
 }
 
 z2r_tls_check_target() (
-    local url="$1" tmp v12 v13 dl dl1 dl2 p12 p13 d1_pid d2_pid peek t0 tls_gap pids
+    local url="$1" fam="${2:--4}" tmp v12 v13 dl dl1 dl2 p12 p13 d1_pid d2_pid peek t0 tls_gap pids
     local rc code rc13 code13 size time unused Z2R_TLS_POLL_INTERVAL
     z2r_poll_sleep_init
     Z2R_TLS_POLL_INTERVAL="$(z2r_poll_interval 0.3)"
@@ -228,14 +297,14 @@ z2r_tls_check_target() (
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    z2r_tls_probe_version "$url" 12 "$tmp/h12" >"$tmp/v12" 2>/dev/null </dev/null &
+    z2r_tls_probe_version "$url" 12 "$tmp/h12" "$fam" >"$tmp/v12" 2>/dev/null </dev/null &
     p12=$!
     # Z2R_TLS_PROBE_GAP: интервал между пробами TLS 1.2 и 1.3 — одновременные
     # попытки обеих версий на одну цель читаются ТСПУ как сканер
     tls_gap="${Z2R_TLS_PROBE_GAP:-0}"
     case "$tls_gap" in ''|*[!0-9]*) tls_gap=0 ;; esac
     [ "$tls_gap" -gt 0 ] && sleep "$tls_gap"
-    z2r_tls_probe_version "$url" 13 "$tmp/h13" >"$tmp/v13" 2>/dev/null </dev/null &
+    z2r_tls_probe_version "$url" 13 "$tmp/h13" "$fam" >"$tmp/v13" 2>/dev/null </dev/null &
     p13=$!
 
     t0=$SECONDS
@@ -280,7 +349,7 @@ z2r_tls_check_target() (
     IFS='|' read -r rc code unused <<< "$v12"
     IFS='|' read -r rc13 code13 unused <<< "$v13"
     if z2r_tls_code_ok "$code" || z2r_tls_code_ok "$code13"; then
-        z2r_tls_probe_download "$url" >"$tmp/d1" 2>/dev/null </dev/null &
+        z2r_tls_probe_download "$url" "$fam" >"$tmp/d1" 2>/dev/null </dev/null &
         d1_pid=$!
         wait "$d1_pid" 2>/dev/null || true
         dl1="$(cat "$tmp/d1" 2>/dev/null)" || dl1=""
@@ -288,7 +357,7 @@ z2r_tls_check_target() (
         dl="$dl1"
         IFS='|' read -r rc code size time unused <<< "$dl1"
         if [ "$(z2r_tls_download_state "$rc" "$code" "$size")" != "ok" ]; then
-            z2r_tls_probe_download "$url" >"$tmp/d2" 2>/dev/null </dev/null &
+            z2r_tls_probe_download "$url" "$fam" >"$tmp/d2" 2>/dev/null </dev/null &
             d2_pid=$!
             wait "$d1_pid" "$d2_pid" 2>/dev/null || true
             dl2="$(cat "$tmp/d2" 2>/dev/null)" || dl2=""
@@ -302,11 +371,110 @@ z2r_tls_check_target() (
     printf '%s\n%s\n%s\n' "$v12" "$v13" "$dl"
 )
 
+# Обе семьи параллельно: v4-строки первыми (позиционный контракт прежний),
+# затем v12_6/v13_6/dl_6. Нет v6 или у домена нет AAAA (rc "N") — только 3 строки.
+z2r_tls_check_target_dual() {
+    local url="$1" host dir p4 p6 aaaa out
+    if ! z2r_ipv6_available; then
+        z2r_tls_check_target "$url"
+        return 0
+    fi
+    host="${url#*://}"
+    host="${host%%/*}"
+    host="${host%%:*}"
+    aaaa=2
+    if z2r_ipv6_aaaa "$host"; then aaaa=0; else aaaa=$?; fi
+    dir="$(z2r_tls_tmpdir)" || return 1
+    if [ "$aaaa" = "1" ]; then
+        z2r_tls_check_target "$url" -4 >"$dir/out" 2>/dev/null
+        printf 'N|000|-|-|-\nN|000|-|-|-\nskip\n' >>"$dir/out"
+    else
+        ( z2r_tls_check_target "$url" -4 ) >"$dir/v4" 2>/dev/null </dev/null &
+        p4=$!
+        ( z2r_tls_check_target "$url" -6 ) >"$dir/v6" 2>/dev/null </dev/null &
+        p6=$!
+        wait "$p4" "$p6" 2>/dev/null || true
+        cat "$dir/v4" "$dir/v6" 2>/dev/null >"$dir/out"
+    fi
+    cat "$dir/out" 2>/dev/null
+    rm -rf "$dir"
+    return 0
+}
+
+# Вердикт по обеим семьям: зелёная любая. v6 без AAAA (rc N) не участвует —
+# тогда вердикт ровно прежний по v4.
+z2r_tls_verdict_dual() {
+    local v12="$1" v13="$2" dl="$3" v12_6="$4" v13_6="$5" dl_6="$6"
+    local verdict4 verdict6 tok4 tok6 rc6
+    rc6="${v12_6%%|*}"
+    if [ -z "$v12_6" ] || [ "$rc6" = "N" ]; then
+        z2r_tls_target_verdict "$v12" "$v13" "$dl"
+        return 0
+    fi
+    verdict4="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
+    verdict6="$(z2r_tls_target_verdict "$v12_6" "$v13_6" "$dl_6")"
+    tok4="${verdict4%%|*}"
+    tok6="${verdict6%%|*}"
+    if [ "$tok4" = "ok" ]; then
+        printf '%s\n' "$verdict4"
+        return 0
+    fi
+    if [ "$tok6" = "ok" ]; then
+        brief="$(z2r_tls_short_result "$v12" "$v13" "$dl" any)"
+        printf 'ok|Сайт доступен только по IPv6 (по IPv4: %s)\n' "${brief#*|}"
+        return 0
+    fi
+    if [ "$tok4" = "warn" ]; then
+        printf '%s\n' "$verdict4"
+        return 0
+    fi
+    if [ "$tok6" = "warn" ]; then
+        printf 'warn|IPv4 недоступен; по IPv6 работает с ограничениями TLS.\n'
+        return 0
+    fi
+    printf '%s\n' "$verdict4"
+}
+
+# Компактный результат автопрогона по обеим семьям; зелёная только v6 —
+# суффикс " (IPv6)". Формат прежний: "verdict|текст".
+z2r_tls_short_result_dual() {
+    local v12="$1" v13="$2" dl="$3" v12_6="$4" v13_6="$5" dl_6="$6" pref="${7:-any}"
+    local s4 s6 tok4 tok6 rc6
+    s4="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$pref")"
+    rc6="${v12_6%%|*}"
+    if [ -z "$v12_6" ] || [ "$rc6" = "N" ]; then
+        printf '%s\n' "$s4"
+        return 0
+    fi
+    s6="$(z2r_tls_short_result "$v12_6" "$v13_6" "$dl_6" "$pref")"
+    tok4="${s4%%|*}"
+    tok6="${s6%%|*}"
+    if [ "$tok4" = "ok" ]; then
+        printf '%s\n' "$s4"
+        return 0
+    fi
+    if [ "$tok6" = "ok" ]; then
+        printf 'ok|%s (IPv6)\n' "${s6#*|}"
+        return 0
+    fi
+    if [ "$tok4" = "warn" ]; then
+        printf '%s\n' "$s4"
+        return 0
+    fi
+    if [ "$tok6" = "warn" ]; then
+        printf '%s\n' "$s6"
+        return 0
+    fi
+    printf '%s\n' "$s4"
+}
+
 # Версия строки проверки: "факт|подсказка". Подсказка пустая только при успехе;
 # в CLI факт красится жёлтым/зелёным, подсказка — красным (как в эталонном выводе).
+# $3 — метка семьи ("IPv6"), попадает в текст факта.
 z2r_tls_version_parts() {
-    local ver="$1" raw="$2"
+    local ver="$1" raw="$2" fam="${3:-}" label
     local rc code proto time state why fact hint unused
+    label="$ver${fam:+ ($fam)}"
     IFS='|' read -r rc code proto time unused <<< "$raw"
     z2r_tls_version_state "$rc" "$code" state
     if [ "$ver" = "1.2" ]; then
@@ -316,21 +484,28 @@ z2r_tls_version_parts() {
     fi
     hint="Проверьте доступность вручную. Возможно ошибка теста."
     case "$state" in
-        ok|http) fact="Есть ответ по TLS $ver ($why): $proto $code за $time с"; hint="" ;;
+        ok|http) fact="Есть ответ по TLS $label ($why): $proto $code за $time с"; hint="" ;;
         aborted) fact="Проверка остановлена: сайт уже ответил по другой версии TLS"; hint="" ;;
-        dns) fact="Нет ответа по TLS $ver ($why) Домен не разрешается (DNS)." ;;
-        timeout) fact="Нет ответа по TLS $ver ($why) Таймаут ${Z2R_TLS_MAX_TIME}сек." ;;
-        tls) fact="Нет ответа по TLS $ver ($why) Ошибка TLS-рукопожатия." ;;
-        conn) fact="Нет ответа по TLS $ver ($why) Соединение не устанавливается." ;;
-        unsupported) fact="Нет ответа по TLS $ver ($why) Локальный curl не поддерживает эту версию TLS." ;;
-        *) fact="Нет ответа по TLS $ver ($why) curl rc=$rc." ;;
+        noaddr) fact="IPv6: у домена нет AAAA-записи — проверка по IPv6 не выполнялась"; hint="" ;;
+        dns)
+            if [ "$fam" = "IPv6" ]; then
+                fact="IPv6: адрес не получен (нет AAAA-записи или системный DNS не отдаёт v6)."
+            else
+                fact="Нет ответа по TLS $label ($why) Домен не разрешается (DNS)."
+            fi
+            ;;
+        timeout) fact="Нет ответа по TLS $label ($why) Таймаут ${Z2R_TLS_MAX_TIME}сек." ;;
+        tls) fact="Нет ответа по TLS $label ($why) Ошибка TLS-рукопожатия." ;;
+        conn) fact="Нет ответа по TLS $label ($why) Соединение не устанавливается." ;;
+        unsupported) fact="Нет ответа по TLS $label ($why) Локальный curl не поддерживает эту версию TLS." ;;
+        *) fact="Нет ответа по TLS $label ($why) curl rc=$rc." ;;
     esac
     printf '%s|%s\n' "$fact" "$hint"
 }
 
 z2r_tls_version_text() {
     local parts fact hint
-    parts="$(z2r_tls_version_parts "$1" "$2")"
+    parts="$(z2r_tls_version_parts "$1" "$2" "${3:-}")"
     fact="${parts%%|*}"; hint="${parts#*|}"
     if [ -n "$hint" ]; then
         printf '%s %s\n' "$fact" "$hint"
@@ -573,6 +748,7 @@ z2r_tls_version_badge() {
         ok) _z2r_badge_text="$_z2r_badge_label OK $_z2r_badge_btime|ok" ;;
         http) _z2r_badge_text="$_z2r_badge_label $_z2r_badge_code $_z2r_badge_btime|http" ;;
         aborted) _z2r_badge_text="$_z2r_badge_label -|aborted" ;;
+        noaddr) _z2r_badge_text="$_z2r_badge_label -|noaddr" ;;
         *) _z2r_badge_text="$_z2r_badge_label FAIL|fail" ;;
     esac
     if [ "$#" -gt 2 ]; then printf -v "$3" '%s' "$_z2r_badge_text"
@@ -800,60 +976,80 @@ z2r_dns_check_print() {
     echo -e "${color}Итог: $(z2r_dns_series_text "$res")${plain}"
 }
 
+# Печать одной TLS-версии (п.01): факт + красная подсказка при неудаче.
+z2r_tls_print_version() {
+    local ver="$1" raw="$2" fam="${3:-}" parts fact hint st rc code unused
+    IFS='|' read -r rc code unused <<< "$raw"
+    z2r_tls_version_state "$rc" "$code" st
+    case "$st" in
+        ok|http) st="$green" ;;
+        aborted|noaddr) st="${plain}" ;;
+        *) st="$yellow" ;;
+    esac
+    parts="$(z2r_tls_version_parts "$ver" "$raw" "$fam")"
+    fact="${parts%%|*}"; hint="${parts#*|}"
+    if [ -n "$hint" ]; then
+        echo -e "${st}${fact} ${red}${hint}${plain}"
+    else
+        echo -e "${st}${fact}${plain}"
+    fi
+}
+
+z2r_tls_print_download() {
+    local raw="$1" parts fact hint cd dlrc dlcode dlsize unused
+    IFS='|' read -r dlrc dlcode dlsize unused <<< "$raw"
+    case "$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")" in
+        ok) cd="$green" ;;
+        *) cd="$yellow" ;;
+    esac
+    parts="$(z2r_tls_download_parts "$raw")"
+    fact="${parts%%|*}"; hint="${parts#*|}"
+    if [ -n "$hint" ]; then
+        echo -e "${cd}${fact} ${red}${hint}${plain}"
+    else
+        echo -e "${cd}${fact}${plain}"
+    fi
+}
+
 check_access() {
-    local TestURL="$1" out v12 v13 dl parts fact hint c12 c13 cd verdict vcolor
-    local rc12 code12 rc13 code13 dlrc dlcode dlsize unused
-    out="$(z2r_tls_check_target "$TestURL")"
+    local TestURL="$1" out v12 v13 dl v12_6 v13_6 dl_6 verdict vcolor
+    if z2r_ipv6_available; then
+        out="$(z2r_tls_check_target_dual "$TestURL")"
+    else
+        out="$(z2r_tls_check_target "$TestURL")"
+    fi
     v12="$(printf '%s\n' "$out" | sed -n 1p)"
     v13="$(printf '%s\n' "$out" | sed -n 2p)"
     dl="$(printf '%s\n' "$out" | sed -n 3p)"
 
-    IFS='|' read -r rc12 code12 unused <<< "$v12"
-    IFS='|' read -r rc13 code13 unused <<< "$v13"
-    z2r_tls_version_state "$rc12" "$code12" c12
-    case "$c12" in
-        ok|http) c12="$green" ;;
-        aborted) c12="${plain}" ;;
-        *) c12="$yellow" ;;
-    esac
-    parts="$(z2r_tls_version_parts 1.2 "$v12")"
-    fact="${parts%%|*}"; hint="${parts#*|}"
-    if [ -n "$hint" ]; then
-        echo -e "${c12}${fact} ${red}${hint}${plain}"
-    else
-        echo -e "${c12}${fact}${plain}"
-    fi
-
-    z2r_tls_version_state "$rc13" "$code13" c13
-    case "$c13" in
-        ok|http) c13="$green" ;;
-        aborted) c13="${plain}" ;;
-        *) c13="$yellow" ;;
-    esac
-    parts="$(z2r_tls_version_parts 1.3 "$v13")"
-    fact="${parts%%|*}"; hint="${parts#*|}"
-    if [ -n "$hint" ]; then
-        echo -e "${c13}${fact} ${red}${hint}${plain}"
-    else
-        echo -e "${c13}${fact}${plain}"
-    fi
-
+    z2r_tls_print_version 1.2 "$v12"
+    z2r_tls_print_version 1.3 "$v13"
     if [ "$dl" != "skip" ]; then
-        IFS='|' read -r dlrc dlcode dlsize unused <<< "$dl"
-        case "$(z2r_tls_download_state "$dlrc" "$dlcode" "$dlsize")" in
-            ok) cd="$green" ;;
-            *) cd="$yellow" ;;
-        esac
-        parts="$(z2r_tls_download_parts "$dl")"
-        fact="${parts%%|*}"; hint="${parts#*|}"
-        if [ -n "$hint" ]; then
-            echo -e "${cd}${fact} ${red}${hint}${plain}"
-        else
-            echo -e "${cd}${fact}${plain}"
-        fi
+        z2r_tls_print_download "$dl"
     fi
 
-    verdict="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
+    if z2r_ipv6_available; then
+        v12_6="$(printf '%s\n' "$out" | sed -n 4p)"
+        v13_6="$(printf '%s\n' "$out" | sed -n 5p)"
+        dl_6="$(printf '%s\n' "$out" | sed -n 6p)"
+        if [ -n "$v12_6" ] && [ "${v12_6%%|*}" != "N" ]; then
+            echo -e "${plain}--- IPv6 ---${plain}"
+            if z2r_ipv6_config_disabled; then
+                echo -e "${yellow}zapret2 не обрабатывает IPv6 (DISABLE_IPV6=1 в config) — проверка выполнена напрямую.${plain}"
+            fi
+            z2r_tls_print_version 1.2 "$v12_6" "IPv6"
+            z2r_tls_print_version 1.3 "$v13_6" "IPv6"
+            if [ "$dl_6" != "skip" ]; then
+                z2r_tls_print_download "$dl_6"
+            fi
+            verdict="$(z2r_tls_verdict_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6")"
+        else
+            echo -e "${plain}IPv6: у домена нет AAAA-записи — проверка по v6 не выполнялась.${plain}"
+            verdict="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
+        fi
+    else
+        verdict="$(z2r_tls_target_verdict "$v12" "$v13" "$dl")"
+    fi
     case "${verdict%%|*}" in
         ok) vcolor="$green" ;;
         warn) vcolor="$yellow" ;;

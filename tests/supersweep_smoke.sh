@@ -676,7 +676,7 @@ d="$(printf 'fresh1.ru fresh2.ru\n' | supersweep_ask_own_domains 'a.com b.com c.
 
 rm -rf "$Z2R_SUPERSWEEP_DIR"
 rm -f "$TMP_DIR/gate13.args"
-printf '\n\n\n\n\n\n\n\n' > "$TMP_DIR/in13.txt"
+printf '\n\n\n\n\n\n\n\n\n' > "$TMP_DIR/in13.txt"
 export MOCK_DELAY=0.2
 export MOCK_OK_P1="1 3"
 (

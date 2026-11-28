@@ -395,10 +395,11 @@ _supersweep_check_target() {
     return 1
 }
 
-# progress.<name>.tsv: epoch, target, strategy, token, tls12, tls13, dl bytes, dl time, short.
+# progress.<name>.tsv: epoch, target, strategy, token, tls12, tls13, dl bytes, dl time, short,
+# затем (когда проверялся IPv6) v6verdict, v6 tls12, v6 tls13 — хвостовые, consumers читают NF>=9.
 _supersweep_progress_row() {
-    local epoch="$1" target="$2" strat="$3" token="$4" v12="$5" v13="$6" dl="$7" short="$8"
-    local st12 st13 dlbytes dltime rc code unused
+    local epoch="$1" target="$2" strat="$3" token="$4" v12="$5" v13="$6" dl="$7" short="$8" v12_6="${9:-}" v13_6="${10:-}" v6tok="${11:-}"
+    local st12 st13 dlbytes dltime rc code unused st12_6 st13_6
     IFS='|' read -r rc code unused <<< "$v12"
     z2r_tls_version_state "$rc" "$code" st12
     IFS='|' read -r rc code unused <<< "$v13"
@@ -407,12 +408,20 @@ _supersweep_progress_row() {
     if [ "$dl" != "skip" ]; then
         IFS='|' read -r rc code dlbytes dltime unused <<< "$dl"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$epoch" "$target" "$strat" "$token" "$st12" "$st13" "$dlbytes" "$dltime" "$short"
+    if [ -n "$v12_6" ]; then
+        IFS='|' read -r rc code unused <<< "$v12_6"
+        z2r_tls_version_state "$rc" "$code" st12_6
+        IFS='|' read -r rc code unused <<< "$v13_6"
+        z2r_tls_version_state "$rc" "$code" st13_6
+        printf '\t%s\t%s\t%s' "$v6tok" "$st12_6" "$st13_6"
+    fi
+    printf '\n'
 }
 
 _supersweep_print_line() {
-    local tag="$1" domain="$2" strat="$3" token="$4" v12="$5" v13="$6" short="$7"
+    local tag="$1" domain="$2" strat="$3" token="$4" v12="$5" v13="$6" short="$7" v12_6="${8:-}" v13_6="${9:-}"
     local color disp stamp
     case "$token" in
         ok) disp="OK  "; color="$green" ;;
@@ -430,6 +439,12 @@ _supersweep_print_line() {
     _supersweep_badge tls1.2 "$v12"
     printf ' '
     _supersweep_badge tls1.3 "$v13"
+    if [ -n "$v12_6" ]; then
+        printf ' '
+        _supersweep_badge "v6 1.2" "$v12_6"
+        printf ' '
+        _supersweep_badge "v6 1.3" "$v13_6"
+    fi
     printf ' %b\n' "${color}${short}${plain}"
 }
 
@@ -455,7 +470,8 @@ _supersweep_worker_profile() {
     local dir="$Z2R_SUPERSWEEP_DIR"
     local tls_pref="$7" pause_sec="$8"
     local s p round=0 out v12 v13 dl short token specs epoch
-    local ok_list="" warn_list="" full_list="" ok_stats="" warn_stats=""
+    local v12_6 v13_6 dl_6 s4 s6 s4tok s6tok famm mfam v6_on dluse
+    local ok_list="" warn_list="" ok6_list="" full_list="" ok_stats="" warn_stats=""
     local n_ok=0 n_warn=0 n_fail=0 n_unknown=0
     local q12 q13 dlsize dltime rc code unused
     local ss_interrupted=0 psleep settle_v g
@@ -476,13 +492,44 @@ _supersweep_worker_profile() {
         _supersweep_request_lock "$name" "$round" "$specs" || { ss_interrupted=1; break; }
         _supersweep_settle
 
+        v12_6=""; v13_6=""; dl_6=""; s4tok=""; s6tok=""; mfam=""
+        v6_on=0; famm="v4"
         if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
             out="$(z2r_media_target "$s" "$tls_pref")" || { ss_interrupted=1; break; }
-            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; } <<< "$out"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; IFS= read -r mfam; } <<< "$out"
+            case "$mfam" in
+                "family|-6")
+                    famm="v6"
+                    short="${short%%|*}|${short#*|} (IPv6)"
+                    ;;
+            esac
         else
-            out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
+            if z2r_ipv6_available; then
+                out="$(_supersweep_check_target "$url" z2r_tls_check_target_dual)" || { ss_interrupted=1; break; }
+            else
+                out="$(_supersweep_check_target "$url")" || { ss_interrupted=1; break; }
+            fi
             { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; } <<< "$out"
-            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            if z2r_ipv6_available; then
+                { IFS= read -r v12_6; IFS= read -r v13_6; IFS= read -r dl_6; } <<< "$out"
+                if [ -n "$v12_6" ] && [ "${v12_6%%|*}" != "N" ]; then
+                    v6_on=1
+                fi
+            fi
+            if [ "$v6_on" = 1 ]; then
+                short="$(z2r_tls_short_result_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
+                s4="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+                s6="$(z2r_tls_short_result "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
+                s4tok="${s4%%|*}"; s6tok="${s6%%|*}"
+                if [ "$s4tok" = "ok" ] && [ "$s6tok" = "ok" ]; then
+                    famm="dual"
+                elif [ "$s4tok" != "ok" ] && [ "$s6tok" = "ok" ]; then
+                    famm="v6"
+                    dl="$dl_6"
+                fi
+            else
+                short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            fi
             if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
                 short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
             fi
@@ -496,20 +543,25 @@ _supersweep_worker_profile() {
         IFS='|' read -r rc code unused <<< "$v13"
         z2r_tls_code_ok "$code" && q13=1
         IFS='|' read -r rc code dlsize dltime unused <<< "$dl"
+        if [ "$v6_on" = 1 ] && [ "$s6tok" = "ok" ]; then
+            ok6_list="${ok6_list}${ok6_list:+ }${s}"
+        fi
+        dluse="$dl"
+        [ "$famm" = "v6" ] && dluse="$dl_6"
         case "$token" in
             ok)
                 n_ok=$((n_ok + 1)); ok_list="${ok_list}${ok_list:+ }${s}"
                 if [ "$q12" = 1 ] && [ "$q13" = 1 ]; then
                     full_list="${full_list}${full_list:+ }${s}"
                 fi
-                if [ "$dl" != "skip" ] && [[ "$dltime" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                    ok_stats="${ok_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
+                if [ "$dluse" != "skip" ] && [[ "$dltime" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+                    ok_stats="${ok_stats}${s}|${dltime}|${dlsize}|${short}|${famm}"$'\n'
                 fi
                 ;;
             warn)
                 n_warn=$((n_warn + 1)); warn_list="${warn_list}${warn_list:+ }${s}"
-                if [ "$dl" != "skip" ] && [[ "$dltime" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                    warn_stats="${warn_stats}${s}|${dltime}|${dlsize}|${short}"$'\n'
+                if [ "$dluse" != "skip" ] && [[ "$dltime" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+                    warn_stats="${warn_stats}${s}|${dltime}|${dlsize}|${short}|${famm}"$'\n'
                 fi
                 ;;
             unknown) n_unknown=$((n_unknown + 1)) ;;
@@ -518,10 +570,19 @@ _supersweep_worker_profile() {
                 ;;
         esac
 
-        _supersweep_print_line "$tag" "" "$s" "$token" "$v12" "$v13" "$short"
+        if [ "$v6_on" = 1 ]; then
+            _supersweep_print_line "$tag" "" "$s" "$token" "$v12" "$v13" "$short" "$v12_6" "$v13_6"
+        else
+            _supersweep_print_line "$tag" "" "$s" "$token" "$v12" "$v13" "$short"
+        fi
         printf -v epoch '%(%s)T' -1 2>/dev/null || epoch="$(date +%s)"
-        _supersweep_progress_row "$epoch" "$profile" "$s" "$token" "$v12" "$v13" "$dl" "$short" \
-            >> "${dir}/progress.${name}.tsv"
+        if [ "$v6_on" = 1 ]; then
+            _supersweep_progress_row "$epoch" "$profile" "$s" "$token" "$v12" "$v13" "$dluse" "$short" \
+                "$v12_6" "$v13_6" "${famm}" >> "${dir}/progress.${name}.tsv"
+        else
+            _supersweep_progress_row "$epoch" "$profile" "$s" "$token" "$v12" "$v13" "$dluse" "$short" \
+                >> "${dir}/progress.${name}.tsv"
+        fi
 
         if [ "$s" -lt "$max" ]; then
             # Обе TLS зелёные → GREEN_PAUSE (0 отключает), в том числе для Discord.
@@ -547,11 +608,14 @@ _supersweep_worker_profile() {
     [ "$s" -le "$max" ] && ss_incomplete=1
 
     # Самая быстрая зелёная; без докачки — первая; без зелёных — жёлтая.
+    # Пулы семей: dual → v4 → v6 (зелёная на любой семье годится).
     local best="" best_short="" best_kind="" win
     if [ -n "$ok_stats" ]; then
-        win="$(printf '%s' "$ok_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+        win="$(printf '%s\n' "$ok_stats" | awk -F'|' -v want=dual 'BEGIN{max=-1} $5==want {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+        [ -n "$win" ] || win="$(printf '%s\n' "$ok_stats" | awk -F'|' -v want=v4 'BEGIN{max=-1} $5==want {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
+        [ -n "$win" ] || win="$(printf '%s\n' "$ok_stats" | awk -F'|' -v want=v6 'BEGIN{max=-1} $5==want {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
         best="${win%%|*}"; best_kind="best"
-        best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+        best_short="$(printf '%s' "$win" | cut -d'|' -f4)"
     fi
     if [ -z "$best" ] && [ -n "$ok_list" ]; then
         best="${ok_list%% *}"; best_kind="best"; best_short="сервер ответил (без докачки)"
@@ -561,7 +625,7 @@ _supersweep_worker_profile() {
         best_short="жёлтая (единственная без красных)"
         if [ -n "$warn_stats" ]; then
             win="$(printf '%s' "$warn_stats" | awk -F'|' 'BEGIN{max=-1} {t=$2+0; sz=$3+0; if (t>0 && sz/t>max) {max=sz/t; line=$0}} END{print line}')"
-            best="${win%%|*}"; best_short="$(printf '%s' "$win" | cut -d'|' -f4-)"
+            best="${win%%|*}"; best_short="$(printf '%s' "$win" | cut -d'|' -f4)"
         fi
     fi
 
@@ -571,6 +635,7 @@ _supersweep_worker_profile() {
         printf 'best_short=%s\n' "$best_short"
         printf 'greens=%s\n' "$ok_list"
         printf 'fulls=%s\n' "$full_list"
+        printf 'greens6=%s\n' "$ok6_list"
         printf 'warns=%s\n' "$warn_list"
         printf 'n_ok=%s\n' "$n_ok"
         printf 'n_warn=%s\n' "$n_warn"
@@ -2013,7 +2078,7 @@ supersweep_ask_quic_pause() {
 }
 
 supersweep_menu() {
-    local cfg domains tls_pref pause ds_pause rkn_pause answer ss_run_rc=0
+    local cfg domains tls_pref pause ds_pause rkn_pause answer ss_run_rc=0 t_out
     local Z2R_MEDIA_VIDEO_ID="${Z2R_MEDIA_VIDEO_ID:-}"
     if [ -d "${Z2R_SUPERSWEEP_DIR}.lock" ]; then
         echo "Суперавтопрогон уже выполняется. Лог: ${Z2R_SUPERSWEEP_DIR}.log"
@@ -2063,6 +2128,11 @@ supersweep_menu() {
 
     tls_pref="$(orch_ask_sweep_tls_pref)"
     if [ -z "$tls_pref" ]; then
+        echo "Отмена."
+        return 0
+    fi
+    t_out="$(orch_ask_sweep_timeout)"
+    if [ "$t_out" = "0" ]; then
         echo "Отмена."
         return 0
     fi

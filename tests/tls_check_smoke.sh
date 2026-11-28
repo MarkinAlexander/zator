@@ -20,6 +20,27 @@ cat > "$TMP_DIR/bin/curl" <<'MOCK'
 if [ -n "${MOCK_VALIDATOR_RC:-}" ]; then
   exit "$MOCK_VALIDATOR_RC"
 fi
+# DoH-запросы AAAA-гейта — раньше остальной логики.
+for arg in "$@"; do
+  case "$arg" in
+    https://dns.google/*|https://8.8.8.8/*)
+      n1=1
+      [ -f "$COUNTER_DIR/doh" ] && n1=$(( $(cat "$COUNTER_DIR/doh") + 1 ))
+      echo "$n1" > "$COUNTER_DIR/doh"
+      if [ "${MOCK_AAAA_EMPTY:-0}" = 1 ]; then
+        echo '{}'
+      else
+        echo '{"Answer":[{"name":"example.org.","type":28,"data":"2001:db8::1"}]}'
+      fi
+      exit 0 ;;
+  esac
+done
+fam6=0
+for arg in "$@"; do
+  [ "$arg" = "-6" ] && fam6=1
+done
+outip="192.0.2.10"
+[ "$fam6" = 1 ] && outip="2001:db8::1"
 hdr=""
 head=0
 ver=""
@@ -34,16 +55,29 @@ for arg in "$@"; do
   prev="$arg"
 done
 if [ "$head" = 1 ]; then
-  cnt="$COUNTER_DIR/head_${ver:-none}"
+  if [ "$fam6" = 1 ]; then
+    cnt="$COUNTER_DIR/head_${ver:-none}_6"
+  else
+    cnt="$COUNTER_DIR/head_${ver:-none}"
+  fi
 else
-  cnt="$COUNTER_DIR/dl"
+  if [ "$fam6" = 1 ]; then
+    cnt="$COUNTER_DIR/dl_6"
+  else
+    cnt="$COUNTER_DIR/dl"
+  fi
 fi
 n=1
 [ -f "$cnt" ] && n=$(( $(cat "$cnt") + 1 ))
 echo "$n" > "$cnt"
 if [ "$head" = 1 ]; then
-  eval "mode=\${MOCK_HEAD_${ver:-x}:-ok200}"
-  eval "flaky=\${MOCK_FLAKY_${ver:-x}:-0}"
+  if [ "$fam6" = 1 ]; then
+    eval "mode=\${MOCK_V6_HEAD_${ver:-x}:-\${MOCK_HEAD_${ver:-x}:-ok200}}"
+    eval "flaky=\${MOCK_FLAKY_${ver:-x}:-0}"
+  else
+    eval "mode=\${MOCK_HEAD_${ver:-x}:-ok200}"
+    eval "flaky=\${MOCK_FLAKY_${ver:-x}:-0}"
+  fi
   if [ "$flaky" = 1 ] && [ "$n" = 1 ]; then mode=timeout; fi
   if [ "${MOCK_SLOW_12:-0}" = 1 ] && [ "$ver" = 12 ]; then
     sleep 30
@@ -56,9 +90,9 @@ if [ "$head" = 1 ]; then
       ;;
   esac
   case "$mode" in
-    ok200)   [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"; echo "0.800 192.0.2.10"; exit 0 ;;
-    code403) [ -n "$hdr" ] && printf 'HTTP/1.1 403 Forbidden\r\n' >"$hdr"; echo "0.900 192.0.2.10"; exit 0 ;;
-    code405) [ -n "$hdr" ] && printf 'HTTP/2 405\r\n' >"$hdr"; echo "0.700 192.0.2.10"; exit 0 ;;
+    ok200)   [ -n "$hdr" ] && printf 'HTTP/2 200\r\n' >"$hdr"; echo "0.800 $outip"; exit 0 ;;
+    code403) [ -n "$hdr" ] && printf 'HTTP/1.1 403 Forbidden\r\n' >"$hdr"; echo "0.900 $outip"; exit 0 ;;
+    code405) [ -n "$hdr" ] && printf 'HTTP/2 405\r\n' >"$hdr"; echo "0.700 $outip"; exit 0 ;;
     timeout) echo "8.004 -"; exit 28 ;;
     dns)     echo "- -"; exit 6 ;;
     tls)     echo "0.500 -"; exit 35 ;;
@@ -68,7 +102,9 @@ fi
 if [ "${MOCK_DL_FLAKY:-0}" = 1 ] && mkdir "$COUNTER_DIR/dlflaky_lock" 2>/dev/null; then
   echo "206 4098 12.0"; exit 28
 fi
-case "${MOCK_DL:-ok206}" in
+dlmode="${MOCK_DL:-ok206}"
+if [ "$fam6" = 1 ] && [ -n "${MOCK_V6_DL:-}" ]; then dlmode="$MOCK_V6_DL"; fi
+case "$dlmode" in
   ok206)      echo "206 65536 1.234"; exit 0 ;;
   ok206var)
     strat="$(cat "$COUNTER_DIR/head_13" 2>/dev/null || echo 0)"
@@ -1427,5 +1463,114 @@ grep -q 'z2r_gv_dns_gate "$gh" >&2' "$REPO_DIR/lib/quic_media.sh" \
   || fail "сценарий 21: _z2r_quic_trial без DNS-гейта"
 grep -q 'z2r_gv_dns_gate "$gh" >&2' "$REPO_DIR/lib/strategies.sh" \
   || fail "сценарий 21: orch_gv_trial без DNS-гейта"
+
+# == 22. IPv6: dual-движок, детект, AAAA-гейт, таймауты ==
+
+# 22a. обе семьи зелёные: dual отдаёт 6 строк, JSON несёт v6-объект
+reset_counter
+unset Z2R_AAAA_example_org
+export Z2R_IPV6_AVAILABLE=1 MOCK_HEAD_12=ok200 MOCK_HEAD_13=ok200 MOCK_DL=ok206
+out="$(z2r_tls_check_target_dual "https://example.org/")"
+[ "$(printf '%s\n' "$out" | wc -l)" = 6 ] || fail "22a: dual должен вернуть 6 строк"
+v12="$(printf '%s\n' "$out" | sed -n 1p)"; v13="$(printf '%s\n' "$out" | sed -n 2p)"; dl="$(printf '%s\n' "$out" | sed -n 3p)"
+v12_6="$(printf '%s\n' "$out" | sed -n 4p)"; v13_6="$(printf '%s\n' "$out" | sed -n 5p)"; dl_6="$(printf '%s\n' "$out" | sed -n 6p)"
+sdual="$(z2r_tls_short_result_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6")"
+[ "${sdual%%|*}" = "ok" ] || fail "22a: dual short должен быть ok: $sdual"
+case "$sdual" in *"(IPv6)"*) fail "22a: при обеих зелёных суффикса (IPv6) быть не должно" ;; esac || :
+(
+  source "$REPO_DIR/webui/cgi-bin/_lib.sh"
+  json="$(check_one_target_json "Test" "https://example.org/")"
+  printf '%s' "$json" | grep -q '"tls12":1,"tls13":1' || fail "22a: v4-флаги потерялись"
+  printf '%s' "$json" | grep -q '"v6":{"tls12":1,"tls13":1' || fail "22a: JSON без зелёного v6-объекта"
+  printf '{"results":[%s]}' "$json" | python -c "import sys, json; json.load(sys.stdin)" \
+    || fail "22a: JSON невалиден"
+)
+
+# 22b. v4 красный (таймауты), v6 зелёный → ok «только по IPv6»
+reset_counter
+unset Z2R_AAAA_example_org
+export MOCK_HEAD_12=timeout MOCK_HEAD_13=timeout MOCK_DL=fail28
+export MOCK_V6_HEAD_12=ok200 MOCK_V6_HEAD_13=ok200 MOCK_V6_DL=ok206
+out="$(z2r_tls_check_target_dual "https://example.org/")"
+v12="$(printf '%s\n' "$out" | sed -n 1p)"; v13="$(printf '%s\n' "$out" | sed -n 2p)"; dl="$(printf '%s\n' "$out" | sed -n 3p)"
+v12_6="$(printf '%s\n' "$out" | sed -n 4p)"; v13_6="$(printf '%s\n' "$out" | sed -n 5p)"; dl_6="$(printf '%s\n' "$out" | sed -n 6p)"
+vdual="$(z2r_tls_verdict_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6")"
+[ "${vdual%%|*}" = "ok" ] || fail "22b: вердикт должен быть ok: $vdual"
+case "$vdual" in *"только по IPv6"*) ;; *) fail "22b: нет пометки «только по IPv6»: $vdual" ;; esac
+sdual="$(z2r_tls_short_result_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6")"
+[ "${sdual%%|*}" = "ok" ] || fail "22b: short должен быть ok: $sdual"
+case "$sdual" in *"(IPv6)"*) ;; *) fail "22b: short без суффикса (IPv6): $sdual" ;; esac
+unset MOCK_HEAD_12 MOCK_HEAD_13 MOCK_DL MOCK_V6_HEAD_12 MOCK_V6_HEAD_13 MOCK_V6_DL
+
+# 22c. нет v6: dual ведёт себя как прежний движок — ровно 3 строки
+reset_counter
+export Z2R_IPV6_AVAILABLE=0
+out="$(z2r_tls_check_target_dual "https://example.org/")"
+[ "$(printf '%s\n' "$out" | wc -l)" = 3 ] || fail "22c: без v6 dual должен вернуть 3 строки"
+unset Z2R_IPV6_AVAILABLE
+
+# 22d. DISABLE_IPV6=1: check_access печатает плашку и всё равно проверяет v6
+mkdir -p "$TMP_DIR/z2r"
+printf 'DISABLE_IPV6=1\n' > "$TMP_DIR/z2r/config"
+reset_counter
+unset Z2R_AAAA_example_org
+export Z2R_IPV6_AVAILABLE=1 MOCK_HEAD_12=ok200 MOCK_HEAD_13=ok200 MOCK_DL=ok206
+ca_out="$(ZAPRET2_ROOT="$TMP_DIR/z2r" check_access "https://example.org/")"
+case "$ca_out" in *"DISABLE_IPV6=1"*) ;; *) fail "22d: нет плашки DISABLE_IPV6" ;; esac
+case "$ca_out" in *"--- IPv6 ---"*) ;; *) fail "22d: нет IPv6-блока" ;; esac
+case "$ca_out" in *"Есть ответ по TLS 1.2 (IPv6)"*) ;; *) fail "22d: нет v6-факта" ;; esac
+unset ZAPRET2_ROOT
+
+# 22e. нет AAAA: v6-строки N, -6 curl не запускается, check_access объясняет
+reset_counter
+unset Z2R_AAAA_example_org
+export MOCK_AAAA_EMPTY=1
+out="$(z2r_tls_check_target_dual "https://example.org/")"
+v12_6="$(printf '%s\n' "$out" | sed -n 4p)"
+[ "$(z2r_tls_version_state "$(z2r_tls_field "$v12_6" 1)" "$(z2r_tls_field "$v12_6" 2)")" = "noaddr" ] \
+  || fail "22e: rc N должен давать состояние noaddr"
+[ "$(calls head_12_6)" = 0 ] || fail "22e: -6 HEAD при отсутствии AAAA не должен запускаться"
+[ "$(calls dl_6)" = 0 ] || fail "22e: -6 докачка при отсутствии AAAA не должна запускаться"
+[ "$(calls doh)" -ge 1 ] || fail "22e: AAAA-гейт не опрашивал DoH"
+ca_out="$(Z2R_IPV6_AVAILABLE=1 check_access "https://example.org/")"
+case "$ca_out" in *"IPv6: у домена нет AAAA-записи"*) ;; *) fail "22e: check_access не объяснил отсутствие AAAA" ;; esac
+unset MOCK_AAAA_EMPTY
+unset Z2R_IPV6_AVAILABLE
+
+# 22f. таймауты: HEAD=T, докачка=2T; вне 1..60 или мусор — rc 2
+z2r_tls_timeouts_set 12 || fail "22f: set 12 должен пройти"
+[ "$Z2R_TLS_MAX_TIME" = 12 ] || fail "22f: HEAD-таймаут не применился"
+[ "$Z2R_TLS_DL_MAX_TIME" = 24 ] || fail "22f: DL-таймаут не удвоился"
+rc22=0; z2r_tls_timeouts_set 0 2>/dev/null || rc22=$?
+[ "$rc22" = 2 ] || fail "22f: 0 должен отклоняться"
+rc22=0; z2r_tls_timeouts_set 61 2>/dev/null || rc22=$?
+[ "$rc22" = 2 ] || fail "22f: 61 должен отклоняться"
+rc22=0; z2r_tls_timeouts_set abc 2>/dev/null || rc22=$?
+[ "$rc22" = 2 ] || fail "22f: мусор должен отклоняться"
+z2r_tls_timeouts_set 5
+[ "$Z2R_TLS_MAX_TIME" = 5 ] && [ "$Z2R_TLS_DL_MAX_TIME" = 10 ] || fail "22f: дефолт 5/10 не вернулся"
+
+# 22g. noaddr: state/badge/parts
+[ "$(z2r_tls_version_state N 000)" = "noaddr" ] || fail "22g: rc N должен давать noaddr"
+[ "$(z2r_tls_version_badge "v6 1.2" "N|000|-|-|-")" = "v6 1.2 -|noaddr" ] \
+  || fail "22g: бейдж noaddr неверный: $(z2r_tls_version_badge "v6 1.2" "N|000|-|-|-")"
+z2r_tls_version_parts 1.2 "N|000|-|-|-" "IPv6" | grep -q "нет AAAA-записи — проверка по IPv6 не выполнялась" \
+  || fail "22g: parts noaddr без объяснения"
+z2r_tls_version_parts 1.2 "0|200|HTTP/2|0.5|-" | grep -q "Есть ответ по TLS 1.2" \
+  || fail "22g: v4-факт сломался (family-аргумент)"
+
+# 22h. статика: изоляция выключает v6, потребители используют dual
+grep -q 'export Z2R_IPV6_AVAILABLE=0' "$REPO_DIR/lib/supersweep_probe.sh" \
+  || fail "22h: изолированный прогон не выключает IPv6"
+grep -q 'z2r_tls_check_target_dual' "$REPO_DIR/lib/strategies.sh" \
+  || fail "22h: автопрогон без dual-движка"
+grep -q 'z2r_tls_check_target_dual' "$REPO_DIR/webui/cgi-bin/_lib.sh" \
+  || fail "22h: WebUI-проверка без dual-движка"
+grep -q 'z2r_tls_check_target_dual' "$REPO_DIR/lib/netcheck.sh" \
+  || fail "22h: check_access без dual-движка"
+grep -q 'z2r_tls_short_result_dual' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "22h: воркер суперсвипа без dual-шорта"
+grep -q 'Z2R_MEDIA_FAMILY' "$REPO_DIR/lib/youtube_media.sh" \
+  || fail "22h: media-конвейер без выбора семьи"
 
 echo "tls check smoke ok"

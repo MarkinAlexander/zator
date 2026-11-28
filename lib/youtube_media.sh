@@ -154,7 +154,7 @@ z2r_media_api() {
     if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ] && [ -n "${Z2R_TLS_LOCAL_PORTS:-}" ]; then
         set -- "$@" --local-port "$Z2R_TLS_LOCAL_PORTS"
     fi
-    _z2r_media_curl "${output%/*}" 262144 "$output" -q -4 --noproxy '*' --proto '=https' -s --connect-timeout 5 --max-time 15 \
+    _z2r_media_curl "${output%/*}" 262144 "$output" -q "${Z2R_MEDIA_FAMILY:--4}" --noproxy '*' --proto '=https' -s --connect-timeout 5 --max-time 15 \
         --max-filesize 262144 -A "$(z2r_media_ua)" \
         -H 'Content-Type: application/json' -H 'X-Goog-Api-Format-Version: 2' \
         --data-binary "@$request" -w '%{http_code}' "$url" "$@" 2>/dev/null
@@ -542,35 +542,66 @@ EOF
     printf '%s\n' "$row"
 }
 
+_z2r_media_fam_tag() {
+    case "${Z2R_MEDIA_FAMILY:--4}" in
+        -6) printf ' (IPv6)' ;;
+        *) printf '' ;;
+    esac
+}
+
 # Старый формат TLS-метрик, но каждый успех подтверждён медиаданными, не корнем CDN.
+# v4 красный и v6 доступен (адрес + AAAA) — один повтор по v6; семья видна в
+# print-выводе и в 5-й строке вывода "family|-4|-6".
 z2r_media_target() {
     local strategy="$1" pref="${2:-both}" output_mode="${3:-}" version row state reason rc code bytes tcp tls ttfb total speed color
-    local v12 v13 r12 r13 s12 s13 selected token label
-    for version in 12 13; do
-        if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
-            row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" z2r_media_check) || return 1
-        else
-            row=$(Z2R_MEDIA_TLS_VERSION=$version z2r_media_check "$strategy") || return 1
-        fi
-        IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
+    local v12 v13 r12 r13 s12 s13 selected token label fam fam_first mhost plen pmime aaaa
+    fam_first="${Z2R_MEDIA_FAMILY:--4}"
+    fam="$fam_first"
+    while :; do
+        Z2R_MEDIA_FAMILY="$fam"
+        for version in 12 13; do
+            if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
+                row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" z2r_media_check) || return 1
+            else
+                row=$(Z2R_MEDIA_TLS_VERSION=$version z2r_media_check "$strategy") || return 1
+            fi
+            IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
 $row
 EOF
-        if [ "$output_mode" = print ]; then
-            case "$state" in OK) color=${green:-} ;; FAIL) color=${red:-} ;; *) color=${yellow:-} ;; esac
-            printf '%bTLS 1.%s: %s; HTTP %s, %s байт, %s с (%s)%b\n' "$color" "${version#1}" "$state" "$code" "$bytes" "$total" "$reason" "${plain:-}"
+            if [ "$output_mode" = print ]; then
+                case "$state" in OK) color=${green:-} ;; FAIL) color=${red:-} ;; *) color=${yellow:-} ;; esac
+                printf '%bTLS 1.%s%s: %s; HTTP %s, %s байт, %s с (%s)%b\n' "$color" "${version#1}" "$(_z2r_media_fam_tag)" "$state" "$code" "$bytes" "$total" "$reason" "${plain:-}"
+            fi
+            # HTTP 206 сам по себе не означает успешную передачу.
+            if [ "$state" = OK ]; then selected="0|206|HTTP/1.1|$total|"; else selected="56|000|HTTP/1.1|$total|"; fi
+            if [ "$version" = 12 ]; then v12=$selected; r12=$row; s12=$state; else v13=$selected; r13=$row; s13=$state; fi
+            [ "$reason" != cancelled ] || break
+        done
+        r13=${r13:-$r12}; s13=${s13:-UNKNOWN}; v13=${v13:-56|000|HTTP/1.1|0|}
+        case "$pref:$s12:$s13" in
+            12:OK:*|13:*:OK|any:OK:*|any:*:OK|both:OK:OK) token=ok; label=OK ;;
+            12:UNKNOWN:*|13:*:UNKNOWN|*:UNKNOWN:*|*:*:UNKNOWN) token=unknown; label=UNKNOWN ;;
+            *:OK:*|*:*:OK) token=warn; label=WARN ;;
+            *) token=fail; label=FAIL ;;
+        esac
+        [ "$token" = fail ] || break
+        [ "$fam" = "$fam_first" ] || break
+        [ "$fam_first" != "-6" ] || break
+        type z2r_ipv6_available >/dev/null 2>&1 && z2r_ipv6_available || break
+        mhost=""
+        for plen in "$Z2R_MEDIA_DIR/audio.params" "$Z2R_MEDIA_DIR/video.params"; do
+            if [ -f "$plen" ]; then
+                IFS='|' read -r plen pmime mhost pmime < "$plen" || mhost=""
+                break
+            fi
+        done
+        if [ -n "$mhost" ]; then
+            aaaa=2
+            if z2r_ipv6_aaaa "$mhost"; then aaaa=0; else aaaa=$?; fi
+            [ "$aaaa" = "1" ] && break
         fi
-        # HTTP 206 сам по себе не означает успешную передачу.
-        if [ "$state" = OK ]; then selected="0|206|HTTP/1.1|$total|"; else selected="56|000|HTTP/1.1|$total|"; fi
-        if [ "$version" = 12 ]; then v12=$selected; r12=$row; s12=$state; else v13=$selected; r13=$row; s13=$state; fi
-        [ "$reason" != cancelled ] || break
+        fam="-6"
     done
-    r13=${r13:-$r12}; s13=${s13:-UNKNOWN}; v13=${v13:-56|000|HTTP/1.1|0|}
-    case "$pref:$s12:$s13" in
-        12:OK:*|13:*:OK|any:OK:*|any:*:OK|both:OK:OK) token=ok; label=OK ;;
-        12:UNKNOWN:*|13:*:UNKNOWN|*:UNKNOWN:*|*:*:UNKNOWN) token=unknown; label=UNKNOWN ;;
-        *:OK:*|*:*:OK) token=warn; label=WARN ;;
-        *) token=fail; label=FAIL ;;
-    esac
     case "$pref" in 12) selected=$r12 ;; *) selected=$r13 ;; esac
     if [ "$pref" = any ] && [ "$s12" = OK ]; then selected=$r12; fi
     if [ "$pref" = both ] && [ "$s12" != OK ]; then selected=$r12; fi
@@ -582,10 +613,11 @@ $selected
 EOF
     if [ "$output_mode" = print ]; then
         case "$token" in ok) color=${green:-} ;; fail) color=${red:-} ;; *) color=${yellow:-} ;; esac
-        printf '%bMedia %s: %s; %s байт за %s с%b\n' "$color" "$label" "$reason" "$bytes" "$total" "${plain:-}"
+        printf '%bMedia %s%s: %s; %s байт за %s с%b\n' "$color" "$label" "$(_z2r_media_fam_tag)" "$reason" "$bytes" "$total" "${plain:-}"
     else
-        printf '%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
-            "$token|Media $label: $reason; $bytes байт за $total с"
+        printf '%s\n%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
+            "$token|Media $label: $reason; $bytes байт за $total с" \
+            "family|${Z2R_MEDIA_FAMILY:--4}"
     fi
 }
 
@@ -639,7 +671,7 @@ z2r_media_probe() (
             reader=$!
         fi
         # Один curl = новое TCP/TLS-соединение. stderr не должен раскрывать URL.
-        curl -q -4 --noproxy '*' --proto '=https' --http1.1 -s \
+        curl -q "${Z2R_MEDIA_FAMILY:--4}" --noproxy '*' --proto '=https' --http1.1 -s \
             --config "$config" -A "$(z2r_media_ua)" "$@" \
             --range "$offset-$end" --max-filesize "$count" --limit-rate 2M \
             --connect-timeout 5 --max-time 15 --speed-limit 1024 --speed-time 10 \

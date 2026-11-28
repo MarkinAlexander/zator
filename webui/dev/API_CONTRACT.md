@@ -220,7 +220,8 @@ ipfrag (по клону), repeats, udplen (паддинг оригинала). i
        "verdict":"ok","text":"Сайт доступен: TLS работает, данные идут.",
      "tls12_detail":{"code":200,"proto":"HTTP/2","time":"0.8","ip":"203.0.113.1","state":"ok","text":"Есть ответ по TLS 1.2 (важно для ТВ и т.п.): HTTP/2 200 за 0.8 с"},
      "tls13_detail":{"code":200,"proto":"HTTP/2","time":"0.7","ip":"203.0.113.1","state":"ok","text":"Есть ответ по TLS 1.3 (важно в основном для всего современного): HTTP/2 200 за 0.7 с"},
-     "download":{"code":206,"size":65536,"time":"1.2","state":"ok","text":"Данные: получено 65536 байт за 1.2 с (код 206)"}}
+     "download":{"code":206,"size":65536,"time":"1.2","state":"ok","text":"Данные: получено 65536 байт за 1.2 с (код 206)"},
+     "v6":null}
     ]
   }
 }
@@ -328,12 +329,17 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
      "verdict":"ok","text":"Сайт доступен: TLS работает, данные идут.",
      "tls12_detail":{"code":200,"proto":"HTTP/2","time":"0.8","ip":"203.0.113.1","state":"ok","text":"Есть ответ по TLS 1.2 (важно для ТВ и т.п.): HTTP/2 200 за 0.8 с"},
      "tls13_detail":{"code":200,"proto":"HTTP/2","time":"0.7","ip":"203.0.113.1","state":"ok","text":"Есть ответ по TLS 1.3 (важно в основном для всего современного): HTTP/2 200 за 0.7 с"},
-     "download":{"code":206,"size":65536,"time":"1.2","state":"ok","text":"Данные: получено 65536 байт за 1.2 с (код 206)"}},
+     "download":{"code":206,"size":65536,"time":"1.2","state":"ok","text":"Данные: получено 65536 байт за 1.2 с (код 206)"},
+     "v6":null},
     {"label":"Blocked Sites","target":"https://meduza.io","tls12":0,"tls13":1,
      "verdict":"ok","text":"Сайт доступен: TLS работает, данные идут.",
      "tls12_detail":{"code":0,"proto":"-","time":"-","ip":"-","state":"tls","text":"Нет ответа по TLS 1.2 (важно для ТВ и т.п.) Ошибка TLS-рукопожатия. Проверьте доступность вручную. Возможно ошибка теста."},
      "tls13_detail":{"code":200,"proto":"HTTP/2","time":"0.9","ip":"203.0.113.2","state":"ok","text":"Есть ответ по TLS 1.3 (важно в основном для всего современного): HTTP/2 200 за 0.9 с"},
-     "download":{"code":206,"size":65536,"time":"1.4","state":"ok","text":"Данные: получено 65536 байт за 1.4 с (код 206)"}}
+     "download":{"code":206,"size":65536,"time":"1.4","state":"ok","text":"Данные: получено 65536 байт за 1.4 с (код 206)"},
+     "v6":{"tls12":1,"tls13":1,"verdict":"ok","text":"Сайт доступен: TLS работает, данные идут.",
+     "tls12_detail":{"code":200,"proto":"HTTP/2","time":"0.8","ip":"2001:db8::1","state":"ok","text":"Есть ответ по TLS 1.2 (IPv6) (важно для ТВ и т.п.): HTTP/2 200 за 0.8 с"},
+     "tls13_detail":{"code":200,"proto":"HTTP/2","time":"0.7","ip":"2001:db8::1","state":"ok","text":"Есть ответ по TLS 1.3 (IPv6) (важно в основном для всего современного): HTTP/2 200 за 0.7 с"},
+     "download":{"code":206,"size":65536,"time":"1.2","state":"ok","text":"Данные: получено 65536 байт за 1.2 с (код 206)"}}}
   ]
 }
 ```
@@ -347,6 +353,7 @@ fallback `rr2---sn-4g5ednly.googlevideo.com`).
 | `text` | сводный текст вердикта (тот же, что печатает CLI-меню) |
 | `tls12_detail`/`tls13_detail` | `code` (число, `0` = ответа нет), `proto` (например `HTTP/2`), `time` (сек), `ip`, `state` (`ok/http/aborted/dns/timeout/tls/conn/unsupported/none`; `aborted` — проверка этой версии остановлена, т.к. сайт уже ответил по другой), `text` |
 | `download` | `null`, если этап пропущен; иначе `code`, `size` (байт), `time`, `state` (`ok/zero/cut/fail`), `text` |
+| `v6` | `null`, если IPv6 нет или у домена нет AAAA (проверка по v6 не выполнялась); иначе тот же набор, что у элемента без `label`/`target`: `tls12`, `tls13`, `verdict`, `text`, `tls12_detail`/`tls13_detail` (тексты с пометкой IPv6), `download`. Общий `verdict`/`text` элемента — комбинированный (зелёная любая семья; «Сайт доступен только по IPv6 …» при красном v4) |
 
 `get_yt_cluster_domain` делает `curl` к
 `redirector.xn--ngstr-lra8j.com` (двойной запрос, fallback
