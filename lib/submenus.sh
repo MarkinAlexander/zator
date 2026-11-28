@@ -2551,7 +2551,7 @@ tls_blob_vers_submenu() {
     echo -e "${yellow}Android/Linux обычно шлют сигнатуру с байтом 03, Windows — с 01.${plain}"
     echo -e "${yellow}Смена 3-го байта у фейков профиля (файловых блобов и клонов CH)${plain}"
     echo -e "${yellow}иногда помогает обойти ТСПУ. Штука экспериментальная.${plain}"
-    echo -e "${yellow}«Не изменяется» — байты пакета не меняются. Смена требует рестарта (п.2).${plain}"
+        echo -e "${yellow}«Не задано» — байты файла блоба как есть. Смена требует рестарта (п.2).${plain}"
     echo ""
     i=1
     for idx in "${!profiles[@]}"; do
@@ -2597,8 +2597,7 @@ tls_blob_vers_all_pick() {
     submenu_item "2" "02 — сигнатура 16 03 02"
     submenu_item "3" "03 — сигнатура 16 03 03 (так шлют Android/Linux)"
     submenu_item "4" "Чередование 02/03 — динамическая"
-    submenu_item "5" "Не изменяется — исходные байты пакета"
-    submenu_item "6" "Не задано — очистить у всех"
+    submenu_item "5" "Не задано — очистить у всех"
     submenu_item "0" "Назад"
     echo ""
 
@@ -2607,14 +2606,13 @@ tls_blob_vers_all_pick() {
       "0"|"")
         return
         ;;
-      [1-6])
+      [1-5])
         case "$choice" in
           1) v="01" ;;
           2) v="02" ;;
           3) v="03" ;;
           4) v="alt" ;;
-          5) v="orig" ;;
-          6) v="" ;;
+          5) v="" ;;
         esac
         local p
         for p in $(blob_vers_supported_profiles); do
@@ -2651,8 +2649,7 @@ tls_blob_vers_profile_pick() {
     submenu_item "2" "02 — сигнатура 16 03 02"
     submenu_item "3" "03 — сигнатура 16 03 03 (так шлют Android/Linux)"
     submenu_item "4" "Чередование 02/03 — динамическая"
-    submenu_item "5" "Не изменяется — исходные байты пакета"
-    submenu_item "6" "Не задано — как сейчас"
+    submenu_item "5" "Не задано — как сейчас"
     submenu_item "0" "Назад"
     echo ""
 
@@ -2661,14 +2658,13 @@ tls_blob_vers_profile_pick() {
       "0"|"")
         return
         ;;
-      [1-6])
+      [1-5])
         case "$choice" in
           1) v="01" ;;
           2) v="02" ;;
           3) v="03" ;;
           4) v="alt" ;;
-          5) v="orig" ;;
-          6) v="" ;;
+          5) v="" ;;
         esac
         if [ -n "$v" ]; then
           blob_vers_set "$profile" "$v" || { echo -e "${red}Не удалось сохранить.${plain}"; pause_enter; continue; }

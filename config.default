@@ -111,7 +111,6 @@ NFQWS2_OPT="
 --lua-init=@/opt/zator/lua/combined-detector.lua
 --lua-init=@/opt/zator/lua/silent-drop-detector.lua
 --lua-init=@/opt/zator/lua/dns-clone.lua
---lua-init=@/opt/zator/lua/fake-adapt.lua
 --lua-init=@/opt/zator/lua/wssize-ramp.lua
 --blob=maxru:@/opt/zator/files/fake/tls_clienthello_max_ru.bin
 # per-profile blob slots: Lua (blob_override.tsv) подставляет z2r_prof_N вместо

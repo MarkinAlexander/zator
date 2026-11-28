@@ -384,8 +384,18 @@ blob_vers_apply_file "$CFG_VERS" || fail "vers clear apply rc!=0"
 grep -q -- '--blob=z2r_prof_3:@/opt/zator/files/fake/tls_vers_test.bin' "$CFG_VERS"   || fail "vers clear: декларация не вернулась на базовый файл"
 z2r_backup_state_files | grep -q '^extra_strats/cache/orchestra/blob_vers\.tsv$'   || fail "backup list не содержит blob_vers.tsv"
 
+# Скрытая нормализация заголовков убрана: z2r.sh не пишет blob_vers.tsv сам,
+# меню/панель не предлагают «Не изменяется» (orig остаётся легаси-значением tsv).
 grep -q "blob_vers.tsv" "$REPO_DIR/z2r.sh" \
-  || fail "z2r.sh не предзаполняет blob_vers.tsv (03 по умолчанию)"
+  && fail "z2r.sh не должен сам предзаполнять blob_vers.tsv (сигнатуры задаёт пользователь)"
+grep -q 'Не изменяется' "$REPO_DIR/lib/submenus.sh" \
+  && fail "меню TLS-сигнатуры не должно предлагать «Не изменяется»"
+grep -q "value: 'orig'" "$REPO_DIR/webui-src/src/components/settings/TlsBlobPanel.vue" \
+  && fail "панель не должна предлагать orig"
+grep -q 'fake_files_refresh' "$REPO_DIR/lib/deploy.sh" \
+  && fail "deploy.sh не должен вызывать fake_files_refresh"
+grep -q 'fake-adapt' "$REPO_DIR/config.default" \
+  && fail "config.default не должен подключать fake-adapt.lua"
 
 ls "$ORCH_DIR" | grep -q '\.tmp\.' && fail "остались .tmp файлы после blob_files"
 

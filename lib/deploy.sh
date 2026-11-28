@@ -637,7 +637,6 @@ deploy_apply_staging() {
     fi
   fi
   deploy_post_apply "$staging" "$tracking" "$z2r_updated" "$webui_updated" || return 1
-  type fake_files_refresh >/dev/null 2>&1 && fake_files_refresh
   # config.default применяется только из core/full-архива: webui-only деплой
   # не должен трогать живой конфиг и эталон. Без проверки deploy_apply_config_default
   # срабатывает на устаревший payload от прошлого полного релиза (бэкап-промпт,
@@ -716,7 +715,6 @@ deploy_apply_newdir() {
     ln -sfn ../cgi-bin "$ZATOR_ROOT/webui/www/cgi-bin" 2>/dev/null || true
   fi
   deploy_post_apply "$ZATOR_ROOT" "$tracking" "$z2r_updated" "$webui_updated"
-  type fake_files_refresh >/dev/null 2>&1 && fake_files_refresh
   if [ "$has_core" = 1 ]; then
     deploy_apply_config_default || return 1
     deploy_offer_media_jq

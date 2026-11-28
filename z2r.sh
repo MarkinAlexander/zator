@@ -340,7 +340,7 @@ z2r_migrate_to_zator() {
   # lua-библиотеки самого zapret2 (zapret-lib.lua, zapret-antidpi.lua,
   # zapret-auto.lua), на которые ссылается конфиг. Переносим только наши файлы,
   # каталог и чужие файлы не трогаем.
-  for f in locked.lua sni-pool.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua fake-adapt.lua wssize-ramp.lua strategy-validator.sh; do
+  for f in locked.lua sni-pool.lua rst-guard.lua strategy-lock-manager.lua combined-detector.lua silent-drop-detector.lua dns-clone.lua wssize-ramp.lua strategy-validator.sh; do
     src="$ZAPRET2_ROOT/lua/$f"
     [ -f "$src" ] || continue
     if [ ! -e "$ZATOR_ROOT/lua/$f" ]; then
@@ -373,7 +373,6 @@ z2r_migrate_to_zator() {
       -e 's#/opt/zapret2/lua/silent-drop-detector.lua#/opt/zator/lua/silent-drop-detector.lua#g' \
       -e 's#/opt/zapret2/lua/dns-clone.lua#/opt/zator/lua/dns-clone.lua#g' \
       -e 's#/opt/zapret2/lua/sni-pool.lua#/opt/zator/lua/sni-pool.lua#g' \
-      -e 's#/opt/zapret2/lua/fake-adapt.lua#/opt/zator/lua/fake-adapt.lua#g' \
       -e 's#/opt/zapret2/lua/wssize-ramp.lua#/opt/zator/lua/wssize-ramp.lua#g' \
       -e 's#/opt/zapret2/lua/strategy-validator.sh#/opt/zator/lua/strategy-validator.sh#g' \
       -e 's#/opt/zapret2/files/fake#/opt/zator/files/fake#g' \
@@ -501,22 +500,6 @@ if [ ! -f "$ORCH_DIR/sni_pool.tsv" ]; then
   fi
 fi
 
-# Дефолтная TLS-сигнатура (1/2/3/4/8 -> 03): создаём только когда файла нет
-# вовсе — «Не задано» у всех профилей оставляет файл (пусть пустой) и дефолт
-# не возвращается. Существующий файл чистится от устаревших значений (04).
-if [ ! -f "$ORCH_DIR/blob_vers.tsv" ]; then
-  if mkdir -p "$ORCH_DIR" && {
-    for _p in 1 2 3 4 8; do printf '%s\t03\n' "$_p" >> "$ORCH_DIR/blob_vers.tsv"; done
-  }; then
-    :
-  else
-    echo -e "${yellow}Не удалось создать дефолтную TLS-сигнатуру: $ORCH_DIR/blob_vers.tsv${plain}" >&2
-  fi
-else
-  awk -F '\t' 'NF==2 && ($2=="01"||$2=="02"||$2=="03"||$2=="orig"||$2=="alt")' "$ORCH_DIR/blob_vers.tsv" > "$ORCH_DIR/blob_vers.tsv.tmp" \
-    && mv -f "$ORCH_DIR/blob_vers.tsv.tmp" "$ORCH_DIR/blob_vers.tsv"
-fi
-
 # Самолечение кастомных доменов: домены, дожившие в locked.tsv, но потерянные
 # из TCP_Custom.txt (старые обновления затирали список), возвращаются в список.
 if type custom_rkn_restore_from_locks >/dev/null 2>&1; then
@@ -636,7 +619,6 @@ RST_GUARD_LUA="$ZATOR_ROOT/lua/rst-guard.lua"
 CIRCULAR_DETECTOR_LUA="$ZATOR_ROOT/lua/combined-detector.lua"
 SILENT_DROP_DETECTOR_LUA="$ZATOR_ROOT/lua/silent-drop-detector.lua"
 DNS_CLONE_LUA="$ZATOR_ROOT/lua/dns-clone.lua"
-FAKE_ADAPT_LUA="$ZATOR_ROOT/lua/fake-adapt.lua"
 WSSIZE_RAMP_LUA="$ZATOR_ROOT/lua/wssize-ramp.lua"
 STRATEGY_LOCK_MANAGER_LUA="$ZATOR_ROOT/lua/strategy-lock-manager.lua"
 STRATEGY_VALIDATOR_WORKER="$ZATOR_ROOT/lua/strategy-validator.sh"
@@ -676,7 +658,6 @@ circular_runtime_update_from_repo() {
   z2r_download_project_file "$SILENT_DROP_DETECTOR_LUA" "lua/silent-drop-detector.lua" || return 1
   z2r_download_project_file "$DNS_CLONE_LUA" "lua/dns-clone.lua" || return 1
   z2r_download_project_file "$SNI_POOL_LUA" "lua/sni-pool.lua" || return 1
-  z2r_download_project_file "$FAKE_ADAPT_LUA" "lua/fake-adapt.lua" || return 1
   # SNI-наборы: sni_zator.txt — проектный (обновляем как есть: google, rkn,
   # будущие секции), sni_user.txt — пользовательский, существующий не
   # перезаписываем (как netrogat.txt); свои секции пользователь ведёт там.
@@ -798,7 +779,6 @@ if [ -f "$ZAPRET2_ROOT/config" ]; then
   fi
   if [ ! -s "$CIRCULAR_DETECTOR_LUA" ] || [ ! -s "$SILENT_DROP_DETECTOR_LUA" ] || \
      [ ! -s "$DNS_CLONE_LUA" ] || [ ! -s "$SNI_POOL_LUA" ] || \
-     [ ! -s "$FAKE_ADAPT_LUA" ] || \
      [ ! -s "$STRATEGY_LOCK_MANAGER_LUA" ] || [ ! -s "$STRATEGY_VALIDATOR_WORKER" ]; then
     echo "Не найдены Lua-модули circular. Пытаюсь скачать из репозитория..."
     circular_runtime_update_from_repo || true
@@ -1096,31 +1076,6 @@ z2r_repo_get() {
   z2r_download_project_file "$1" "$2"
 }
 
-# идемпотентный рефреш заголовков штатных fake-файлов (Z2R_FAKE_REFRESH=0 отключает)
-fake_files_refresh() {
-  [ "${Z2R_FAKE_REFRESH:-1}" = "1" ] || return 0
-  [ -d "$ZATOR_ROOT/files/fake" ] || return 0
-  local names="3.bin 4.bin TLS_ClientHello_vk_ru.bin fake_syndata.bin fake_tls_1.bin fake_tls_2.bin fake_tls_3.bin fake_tls_4.bin fake_tls_5.bin fake_tls_6.bin fake_tls_7.bin fake_tls_8.bin tls13_hcaptcha.bin tls_clienthello_1.bin tls_clienthello_10.bin tls_clienthello_11.bin tls_clienthello_12.bin tls_clienthello_13.bin tls_clienthello_14.bin tls_clienthello_15.bin tls_clienthello_16.bin tls_clienthello_17.bin tls_clienthello_18.bin tls_clienthello_2.bin tls_clienthello_2n.bin tls_clienthello_3.bin tls_clienthello_4.bin tls_clienthello_4pda_to.bin tls_clienthello_5.bin tls_clienthello_6a.bin tls_clienthello_7.bin tls_clienthello_9.bin tls_clienthello_activated.bin tls_clienthello_chat_deepseek_com.bin tls_clienthello_google_com_tlsrec.bin tls_clienthello_gosuslugi_ru.bin tls_clienthello_iana_org.bin tls_clienthello_iana_org_bigsize.bin tls_clienthello_max_ru.bin tls_clienthello_rutracker_org_kyber.bin tls_clienthello_sberbank_ru.bin tls_clienthello_vk_com.bin tls_clienthello_vk_com_kyber.bin tls_clienthello_www_google_com.bin tls_clienthello_www_google_com_2.bin tls_hcaptcha_com.bin tls_serverhello_google_com_tls13.bin"
-  local cache="$ZATOR_ROOT/extra_strats/cache"
-  local bak="$cache/fake_orig" log="$cache/fake_refresh.log"
-  mkdir -p "$bak" 2>/dev/null || return 0
-  printf '\026\003\001' > "$cache/.fake_hdr_a" 2>/dev/null || return 0
-  printf '\026\003\003' > "$cache/.fake_hdr_b" 2>/dev/null || return 0
-  local name f
-  for name in $names; do
-    f="$ZATOR_ROOT/files/fake/$name"
-    [ -f "$f" ] || continue
-    head -c 3 "$f" 2>/dev/null | cmp -s - "$cache/.fake_hdr_a" || continue
-    [ -f "$bak/$name" ] || cp -p "$f" "$bak/$name" 2>/dev/null
-    printf '\003' | dd of="$f" bs=1 seek=2 conv=notrunc 2>/dev/null || continue
-    if head -c 3 "$f" 2>/dev/null | cmp -s - "$cache/.fake_hdr_b"; then
-      echo "$(date '+%Y-%m-%d %H:%M:%S') refreshed $name" >> "$log" 2>/dev/null
-    else
-      [ -f "$bak/$name" ] && cp -p "$bak/$name" "$f" 2>/dev/null
-    fi
-  done
-  return 0
-}
 
 get_repo() {
   local fake_archive="/tmp/z2r_fake_files_$$.tar.gz"
@@ -1144,7 +1099,7 @@ get_repo() {
   else
     rst_guard_lua_update_from_repo || true
   fi
-  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$SNI_POOL_LUA" ] && [ -s "$FAKE_ADAPT_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
+  if [ "${Z2R_GET_REPO_SKIP_EXISTING:-0}" = "1" ] && [ -s "$CIRCULAR_DETECTOR_LUA" ] && [ -s "$SILENT_DROP_DETECTOR_LUA" ] && [ -s "$DNS_CLONE_LUA" ] && [ -s "$SNI_POOL_LUA" ] && [ -s "$STRATEGY_LOCK_MANAGER_LUA" ]; then
     :
   else
     circular_runtime_update_from_repo || return 1
@@ -1197,7 +1152,6 @@ get_repo() {
     }
     rm -f "$fake_archive"
   fi
-  fake_files_refresh
   z2r_repo_get "$ZATOR_ROOT/extra_strats/UDP_YT_list.txt" "extra_strats/UDP/YT/List.txt" || return 1
   z2r_repo_get "$ZATOR_ROOT/extra_strats/TCP_RKN_list.txt" "extra_strats/TCP/RKN/List.txt" || return 1
   # TCP_Custom.txt — пользовательский список: существующий файл не трогаем.

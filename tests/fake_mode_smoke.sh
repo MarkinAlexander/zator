@@ -235,25 +235,16 @@ assert_contains "$CONTRACT_SRC" '"profile_snis"' "API_CONTRACT без profile_sn
 assert_contains "$CONTRACT_SRC" '`clone_size`' "API_CONTRACT без clone_size"
 assert_contains "$CONTRACT_SRC" '"profile_sizes"' "API_CONTRACT без profile_sizes"
 
-# --- 2c. Адаптер дефолтного блоба в сборке (универсальный config.default) ---
+# --- 2c. Скрытой нормализации заголовков больше нет (сигнатуры — вручную) ---
 
-CONFIG_SRC="$(tr -d '\r' < "$REPO_DIR/config.default")"
 Z2R_SRC="$(tr -d '\r' < "$REPO_DIR/z2r.sh")"
 
-assert_contains "$CONFIG_SRC" '^--lua-init=@/opt/zator/lua/fake-adapt\.lua$' \
-  "config.default не подключает адаптер fake-adapt.lua"
-[ "$(grep -c '^--lua-init=@/opt/zator/lua/fake-adapt.lua$' "$REPO_DIR/config.default")" -eq 1 ] \
-  || fail "config.default: lua-init адаптера дублирован"
-assert_contains "$Z2R_SRC" 'FAKE_ADAPT_LUA="\$ZATOR_ROOT/lua/fake-adapt\.lua"' \
-  "z2r.sh нет переменной FAKE_ADAPT_LUA"
-assert_contains "$Z2R_SRC" 'z2r_download_project_file "\$FAKE_ADAPT_LUA" "lua/fake-adapt\.lua"' \
-  "z2r.sh не докачивает fake-adapt.lua"
-assert_contains "$Z2R_SRC" 'silent-drop-detector\.lua dns-clone\.lua fake-adapt\.lua wssize-ramp\.lua strategy-validator\.sh' \
-  "миграция z2r.sh не переносит fake-adapt.lua"
+grep -q 'fake-adapt' "$REPO_DIR/config.default" \
+  && fail "config.default всё ещё подключает fake-adapt.lua"
+grep -q 'fake-adapt' "$REPO_DIR/z2r.sh" \
+  && fail "z2r.sh всё ещё упоминает fake-adapt.lua"
 assert_contains "$Z2R_SRC" 'locked\.lua sni-pool\.lua rst-guard\.lua' \
   "миграция z2r.sh не переносит sni-pool.lua"
-assert_contains "$Z2R_SRC" 's#/opt/zapret2/lua/fake-adapt\.lua#/opt/zator/lua/fake-adapt\.lua#g' \
-  "миграция z2r.sh не переписывает путь fake-adapt.lua"
 
 # --- 2d. SNI клона: свой домен принимает хитрые URL (нормализация как в диалоге) ---
 

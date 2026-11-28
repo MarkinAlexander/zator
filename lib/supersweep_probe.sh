@@ -79,8 +79,6 @@ supersweep_probe_config() {
             "--lua-init=@${ZAPRET2_ROOT:-/opt/zapret2}/lua/zapret-auto.lua" \
             "--lua-init=@$dir/locked.lua"
         [ "$sni_pool_lua" != 1 ] || printf '%s\n' "--lua-init=@$dir/sni-pool.lua"
-        printf '%s\n' \
-            "--lua-init=@${ZATOR_ROOT:-/opt/zator}/lua/fake-adapt.lua"
         awk -v ramp_enable="$ramp_enable" -v ramp_args="$ramp_args" '
             /^NFQWS2_OPT="[[:space:]]*$/ { opts=1; next }
             opts && /^"[[:space:]]*$/ { opts=0 }
