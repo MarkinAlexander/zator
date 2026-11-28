@@ -2584,10 +2584,7 @@ ${Fcyan}777.${yellow} Активировать zeefeer premium (Нажимать
     ;;
 
   "01")
-    t_menu="$(orch_ask_sweep_timeout)"
-    if [ "$t_menu" != "0" ]; then
-      check_access_list
-    fi
+    check_access_list
     pause_enter
     ;;
 
