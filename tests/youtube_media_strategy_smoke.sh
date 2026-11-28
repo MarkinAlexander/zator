@@ -175,7 +175,10 @@ z2r_media_check() {
 for spec in both:FAIL:FAIL:fail both:FAIL:OK:warn both:OK:FAIL:warn 12:OK:FAIL:ok 13:OK:FAIL:warn any:OK:FAIL:ok both:OK:UNKNOWN:unknown 12:OK:UNKNOWN:ok both:UNKNOWN:UNKNOWN:unknown; do
     IFS=: read -r pref first_state second_state expected <<< "$spec"
     out=$(z2r_media_target 1 "$pref")
-    test "$(printf '%s\n' "$out" | sed -n '4s/|.*//p')" = "$expected"
+    # Формат: v12, v13, dl, v12_6, v13_6, dl_6, short, family
+    test "$(printf '%s\n' "$out" | sed -n '7s/|.*//p')" = "$expected"
+    test "$(printf '%s\n' "$out" | sed -n 8p)" = "family|-4" \
+      || test "$(printf '%s\n' "$out" | sed -n 8p)" = "family|-6"
     if [ "$expected" = warn ]; then
         test "$(printf '%s\n' "$out" | sed -n 3p)" = '0|206|2097152|.9'
     fi

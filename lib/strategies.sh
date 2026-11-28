@@ -139,6 +139,16 @@ orch_profile_try() {
 
 # Общий пошаговый цикл; GV-контекст добавляет только один кеш на всю серию.
 _orch_profile_manual_sweep() {
+    # Частые переключения стратегий триггерят ТСПУ: пауза между шагами
+    # выбирается один раз на серию (0 — переключаться без паузы).
+    local manual_pause=3 pans=""
+    read -re -p "Пауза между стратегиями, сек (Enter - 3, 0 - без паузы): " pans || pans=""
+    case "$pans" in
+        0) manual_pause=0 ;;
+        ''|*[!0-9]*) manual_pause=3 ;;
+        *) manual_pause="$pans" ;;
+    esac
+
     for p in $proto_list; do
         prev_map["$p"]="$(orch_locked_state_get "$profile" "$p")"
         [ "$current_state" = "0" ] && prev_map["$p"]="0"
@@ -199,6 +209,9 @@ _orch_profile_manual_sweep() {
             return
         elif [ "$answer" = "0" ]; then
             break
+        fi
+        if [ "$manual_pause" -gt 0 ]; then
+            sleep "$manual_pause" || true
         fi
     done
 
@@ -487,7 +500,7 @@ orch_auto_sweep() {
         fi
 
         v12_6=""; v13_6=""; dl_6=""; s4tok=""; s6tok=""
-        v6_on=0; famm="v4"; mfam=""
+        v6_on=0; famm="v4"; mfam=""; media_text=""
         if [ "${_Z2R_GV_TRIAL:-0}" = 1 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
             _supersweep_settle
             out="$(z2r_media_target "$s" "$tls_pref")" || {
@@ -495,12 +508,15 @@ orch_auto_sweep() {
                 orch_auto_sweep_interrupted=1
                 break
             }
-            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; IFS= read -r mfam; } <<< "$out"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; \
+              IFS= read -r v12_6; IFS= read -r v13_6; IFS= read -r dl_6; \
+              IFS= read -r short; IFS= read -r mfam; } <<< "$out"
+            media_text="${short#*|}"
+            if [ -n "$v12_6" ] && [ "$v12_6" != "skip" ]; then
+                v6_on=1
+            fi
             case "$mfam" in
-                "family|-6")
-                    famm="v6"
-                    short="${short%%|*}|${short#*|} (IPv6)"
-                    ;;
+                "family|-6") [ "$v6_on" = 1 ] || famm="v6" ;;
             esac
         else
             if z2r_ipv6_available; then
@@ -515,22 +531,25 @@ orch_auto_sweep() {
                     v6_on=1
                 fi
             fi
-            if [ "$v6_on" = 1 ]; then
-                short="$(z2r_tls_short_result_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
-                s4="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-                s6="$(z2r_tls_short_result "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
-                s4tok="${s4%%|*}"; s6tok="${s6%%|*}"
-                if [ "$s4tok" = "ok" ] && [ "$s6tok" = "ok" ]; then
-                    famm="dual"
-                elif [ "$s4tok" != "ok" ] && [ "$s6tok" = "ok" ]; then
-                    famm="v6"
-                    dl="$dl_6"
-                fi
-            else
-                short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-            fi
+            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
             if [ "${_Z2R_GV_TRIAL:-0}" = 1 ]; then
                 short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
+            fi
+        fi
+        # Учёт семей общий для TLS-dual и media: зелёная любая семья.
+        if [ "$v6_on" = 1 ]; then
+            s4="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            s6="$(z2r_tls_short_result "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
+            s4tok="${s4%%|*}"; s6tok="${s6%%|*}"
+            if [ "$s4tok" = "ok" ] && [ "$s6tok" = "ok" ]; then
+                famm="dual"
+            elif [ "$s6tok" = "ok" ] && [ "$s4tok" != "ok" ]; then
+                famm="v6"
+                dl="$dl_6"
+                short="${short%%|*}|${short#*|} (IPv6)"
+            elif [ "$s6tok" != "fail" ] && [ "$s4tok" = "fail" ]; then
+                famm="v6"
+                dl="$dl_6"
             fi
         fi
         token="${short%%|*}"; short="${short#*|}"
@@ -561,7 +580,7 @@ orch_auto_sweep() {
             case "$(z2r_tls_version_state "$(z2r_tls_field "$v13_6" 1)" "$(z2r_tls_field "$v13_6" 2)")" in
                 ok|http) n_a13_6=$((n_a13_6 + 1)) ;;
             esac
-            [ "$s6tok" = "ok" ] && ok6_list="${ok6_list}${ok6_list:+ }${s}"
+            [ "$token" = "ok" ] && [ "$s6tok" = "ok" ] && ok6_list="${ok6_list}${ok6_list:+ }${s}"
         fi
 
         dluse="$dl"
@@ -594,10 +613,26 @@ orch_auto_sweep() {
         line12="$(_orch_badge_line tls1.2 "$v12")"
         line13="$(_orch_badge_line tls1.3 "$v13")"
         if [ "$v6_on" = 1 ]; then
-            line12_6="$(_orch_badge_line "v6 1.2" "$v12_6")"
-            line13_6="$(_orch_badge_line "v6 1.3" "$v13_6")"
-            printf '%s %3d: %b %b %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
-                "${color}${disp}${plain}" "$line12" "$line13" "$line12_6" "$line13_6" "${color}${short}${plain}"
+            # Две отдельные строки — по одной на семью: видно, что именно
+            # прошло по v4, а что по v6.
+            line12_6="$(_orch_badge_line tls1.2 "$v12_6")"
+            line13_6="$(_orch_badge_line tls1.3 "$v13_6")"
+            case "$s4tok" in
+                ok) dcol="$green"; dtxt="OK  " ;;
+                warn|unknown) dcol="$yellow"; dtxt="WARN" ;;
+                *) dcol="$red"; dtxt="FAIL" ;;
+            esac
+            printf '%s %3d: v4: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
+                "${dcol}${dtxt}${plain}" "$line12" "$line13" "${dcol}${s4#*|}${plain}"
+            case "$s6tok" in
+                ok) dcol="$green"; dtxt="OK  " ;;
+                warn|unknown) dcol="$yellow"; dtxt="WARN" ;;
+                *) dcol="$red"; dtxt="FAIL" ;;
+            esac
+            s6text="${s6#*|}"
+            if [ "$famm" = "v6" ] && [ -n "$media_text" ]; then s6text="$media_text"; fi
+            printf '%s %3d: v6: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
+                "${dcol}${dtxt}${plain}" "$line12_6" "$line13_6" "${dcol}${s6text}${plain}"
         else
             printf '%s %3d: %b %b %b %b\n' "$(date '+%H:%M:%S')" "$s" \
                 "${color}${disp}${plain}" "$line12" "$line13" "${color}${short}${plain}"
@@ -709,13 +744,14 @@ orch_auto_sweep() {
     fi
     # Нужная версия TLS не прошла ни одной стратегией — это свойство сайта
     # или блокировки, стратегии тут не помогут; подсказываем, что делать.
-    if [ "$n_a12" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "12" ]; }; then
+    # Зелёные через v6 снимают сам вопрос — подсказки не нужны.
+    if [ -z "$ok6_list" ] && [ "$n_a12" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "12" ]; }; then
         echo -e " ${yellow}TLS 1.2 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
         if [ "$tls_pref" = "both" ]; then
             echo -e " ${yellow}Если TLS 1.2 не нужен, перезапустите автопрогон с целью TLS 1.3.${plain}"
         fi
     fi
-    if [ "$n_a13" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "13" ]; }; then
+    if [ -z "$ok6_list" ] && [ "$n_a13" = "0" ] && { [ "$tls_pref" = "both" ] || [ "$tls_pref" = "13" ]; }; then
         echo -e " ${yellow}TLS 1.3 не прошёл ни одной стратегией: сайт или блокировка его не пускает.${plain}"
         if [ "$tls_pref" = "both" ]; then
             echo -e " ${yellow}Если TLS 1.3 не нужен, перезапустите автопрогон с целью TLS 1.2.${plain}"

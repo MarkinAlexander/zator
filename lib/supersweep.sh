@@ -493,15 +493,18 @@ _supersweep_worker_profile() {
         _supersweep_settle
 
         v12_6=""; v13_6=""; dl_6=""; s4tok=""; s6tok=""; mfam=""
-        v6_on=0; famm="v4"
+        v6_on=0; famm="v4"; media_text=""
         if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ] && [ "${Z2R_MEDIA_READY:-0}" = 1 ]; then
             out="$(z2r_media_target "$s" "$tls_pref")" || { ss_interrupted=1; break; }
-            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; IFS= read -r short; IFS= read -r mfam; } <<< "$out"
+            { IFS= read -r v12; IFS= read -r v13; IFS= read -r dl; \
+              IFS= read -r v12_6; IFS= read -r v13_6; IFS= read -r dl_6; \
+              IFS= read -r short; IFS= read -r mfam; } <<< "$out"
+            media_text="${short#*|}"
+            if [ -n "$v12_6" ] && [ "$v12_6" != "skip" ]; then
+                v6_on=1
+            fi
             case "$mfam" in
-                "family|-6")
-                    famm="v6"
-                    short="${short%%|*}|${short#*|} (IPv6)"
-                    ;;
+                "family|-6") [ "$v6_on" = 1 ] || famm="v6" ;;
             esac
         else
             if z2r_ipv6_available; then
@@ -516,22 +519,24 @@ _supersweep_worker_profile() {
                     v6_on=1
                 fi
             fi
-            if [ "$v6_on" = 1 ]; then
-                short="$(z2r_tls_short_result_dual "$v12" "$v13" "$dl" "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
-                s4="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-                s6="$(z2r_tls_short_result "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
-                s4tok="${s4%%|*}"; s6tok="${s6%%|*}"
-                if [ "$s4tok" = "ok" ] && [ "$s6tok" = "ok" ]; then
-                    famm="dual"
-                elif [ "$s4tok" != "ok" ] && [ "$s6tok" = "ok" ]; then
-                    famm="v6"
-                    dl="$dl_6"
-                fi
-            else
-                short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
-            fi
+            short="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
             if [ "$name" = gv ] && [ "$Z2R_SUPERSWEEP_MEDIA" != 0 ]; then
                 short="unknown|Плюшевый TLS/CDN-тест — медиаданные не проверены; ${short#*|}"
+            fi
+        fi
+        if [ "$v6_on" = 1 ]; then
+            s4="$(z2r_tls_short_result "$v12" "$v13" "$dl" "$tls_pref")"
+            s6="$(z2r_tls_short_result "$v12_6" "$v13_6" "$dl_6" "$tls_pref")"
+            s4tok="${s4%%|*}"; s6tok="${s6%%|*}"
+            if [ "$s4tok" = "ok" ] && [ "$s6tok" = "ok" ]; then
+                famm="dual"
+            elif [ "$s6tok" = "ok" ] && [ "$s4tok" != "ok" ]; then
+                famm="v6"
+                dl="$dl_6"
+                short="${short%%|*}|${short#*|} (IPv6)"
+            elif [ "$s6tok" != "fail" ] && [ "$s4tok" = "fail" ]; then
+                famm="v6"
+                dl="$dl_6"
             fi
         fi
         token="${short%%|*}"; short="${short#*|}"
@@ -543,7 +548,7 @@ _supersweep_worker_profile() {
         IFS='|' read -r rc code unused <<< "$v13"
         z2r_tls_code_ok "$code" && q13=1
         IFS='|' read -r rc code dlsize dltime unused <<< "$dl"
-        if [ "$v6_on" = 1 ] && [ "$s6tok" = "ok" ]; then
+        if [ "$v6_on" = 1 ] && [ "$token" = "ok" ] && [ "$s6tok" = "ok" ]; then
             ok6_list="${ok6_list}${ok6_list:+ }${s}"
         fi
         dluse="$dl"
@@ -571,14 +576,20 @@ _supersweep_worker_profile() {
         esac
 
         if [ "$v6_on" = 1 ]; then
-            _supersweep_print_line "$tag" "" "$s" "$token" "$v12" "$v13" "$short" "$v12_6" "$v13_6"
+            # Две строки — по семье; в слоте домена печатается v4/v6.
+            case "$s4tok" in ok|warn|unknown|fail) d4="$s4tok" ;; *) d4="fail" ;; esac
+            case "$s6tok" in ok|warn|unknown|fail) d6="$s6tok" ;; *) d6="fail" ;; esac
+            s6text="${s6#*|}"
+            [ "$famm" = "v6" ] && [ -n "$media_text" ] && s6text="$media_text"
+            _supersweep_print_line "$tag" "v4" "$s" "$d4" "$v12" "$v13" "${s4#*|}"
+            _supersweep_print_line "$tag" "v6" "$s" "$d6" "$v12_6" "$v13_6" "$s6text"
         else
             _supersweep_print_line "$tag" "" "$s" "$token" "$v12" "$v13" "$short"
         fi
         printf -v epoch '%(%s)T' -1 2>/dev/null || epoch="$(date +%s)"
         if [ "$v6_on" = 1 ]; then
             _supersweep_progress_row "$epoch" "$profile" "$s" "$token" "$v12" "$v13" "$dluse" "$short" \
-                "$v12_6" "$v13_6" "${famm}" >> "${dir}/progress.${name}.tsv"
+                "$v12_6" "$v13_6" "${s6tok:-fail}" >> "${dir}/progress.${name}.tsv"
         else
             _supersweep_progress_row "$epoch" "$profile" "$s" "$token" "$v12" "$v13" "$dluse" "$short" \
                 >> "${dir}/progress.${name}.tsv"

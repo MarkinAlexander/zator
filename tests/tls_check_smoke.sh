@@ -1568,8 +1568,8 @@ grep -q 'z2r_tls_check_target_dual' "$REPO_DIR/webui/cgi-bin/_lib.sh" \
   || fail "22h: WebUI-проверка без dual-движка"
 grep -q 'z2r_tls_check_target_dual' "$REPO_DIR/lib/netcheck.sh" \
   || fail "22h: check_access без dual-движка"
-grep -q 'z2r_tls_short_result_dual' "$REPO_DIR/lib/supersweep.sh" \
-  || fail "22h: воркер суперсвипа без dual-шорта"
+grep -q 'z2r_tls_short_result "$v12_6"' "$REPO_DIR/lib/supersweep.sh" \
+  || fail "22h: воркер суперсвипа не считает короткий вердикт по v6-строкам"
 grep -q 'Z2R_MEDIA_FAMILY' "$REPO_DIR/lib/youtube_media.sh" \
   || fail "22h: media-конвейер без выбора семьи"
 

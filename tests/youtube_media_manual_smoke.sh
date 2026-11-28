@@ -140,7 +140,8 @@ for scenario in cancel save fallback expired signal; do
             fi
         }
         if [ "$scenario" = save ]; then answer=1; else answer=0; fi
-        printf '1\n\n\n%s\n' "$answer" | orch_profile_try 2 Googlevideo tls https://old.googlevideo.com/ > "$tmp/series.log" 2>&1
+        # Ввод: стратегия, видео, пауза (0 - без паузы), далее, ответ цикла.
+        printf '1\n\n0\n\n%s\n' "$answer" | orch_profile_try 2 Googlevideo tls https://old.googlevideo.com/ > "$tmp/series.log" 2>&1
         test "$(wc -l < "$tmp/resolves")" = 1
         test ! -d "$(cat "$tmp/resolves")"
         test ! -d "$tmp/series.lock"

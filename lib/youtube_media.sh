@@ -550,15 +550,19 @@ _z2r_media_fam_tag() {
 }
 
 # Старый формат TLS-метрик, но каждый успех подтверждён медиаданными, не корнем CDN.
-# v4 красный и v6 доступен (адрес + AAAA) — один повтор по v6; семья видна в
-# print-выводе и в 5-й строке вывода "family|-4|-6".
+# v4 красный и v6 доступен (адрес + AAAA) — один повтор по v6. Вывод (не print):
+# строки попытки 1 (v12/v13/dl), строки попытки 2 (v12_6/v13_6/dl_6, "skip" без
+# фолбэка), short, family|-4|-6 — бейджи обеих семей рисует вызывающий.
 z2r_media_target() {
     local strategy="$1" pref="${2:-both}" output_mode="${3:-}" version row state reason rc code bytes tcp tls ttfb total speed color
-    local v12 v13 r12 r13 s12 s13 selected token label fam fam_first mhost plen pmime aaaa
+    local vA12 vA13 rA12 rA13 sA12 sA13 selected token label
+    local v12 v13 dl v12_6 v13_6 dl_6 fam fam_first fam_last mhost plen pmime aaaa
     fam_first="${Z2R_MEDIA_FAMILY:--4}"
-    fam="$fam_first"
+    fam="$fam_first"; fam_last="$fam"
+    v12=""; v13=""; dl=""; v12_6=""; v13_6=""; dl_6=""
     while :; do
         Z2R_MEDIA_FAMILY="$fam"
+        vA12=""; vA13=""; rA12=""; rA13=""; sA12=""; sA13=""
         for version in 12 13; do
             if [ "${Z2R_SUPERSWEEP_ISOLATED:-0}" = 1 ]; then
                 row=$(Z2R_MEDIA_TLS_VERSION=$version _supersweep_check_target "$strategy" z2r_media_check) || return 1
@@ -574,17 +578,34 @@ EOF
             fi
             # HTTP 206 сам по себе не означает успешную передачу.
             if [ "$state" = OK ]; then selected="0|206|HTTP/1.1|$total|"; else selected="56|000|HTTP/1.1|$total|"; fi
-            if [ "$version" = 12 ]; then v12=$selected; r12=$row; s12=$state; else v13=$selected; r13=$row; s13=$state; fi
+            if [ "$version" = 12 ]; then vA12=$selected; rA12=$row; sA12=$state; else vA13=$selected; rA13=$row; sA13=$state; fi
             [ "$reason" != cancelled ] || break
         done
-        r13=${r13:-$r12}; s13=${s13:-UNKNOWN}; v13=${v13:-56|000|HTTP/1.1|0|}
-        case "$pref:$s12:$s13" in
+        rA13=${rA13:-$rA12}; sA13=${sA13:-UNKNOWN}; vA13=${vA13:-56|000|HTTP/1.1|0|}
+        case "$pref:$sA12:$sA13" in
             12:OK:*|13:*:OK|any:OK:*|any:*:OK|both:OK:OK) token=ok; label=OK ;;
             12:UNKNOWN:*|13:*:UNKNOWN|*:UNKNOWN:*|*:*:UNKNOWN) token=unknown; label=UNKNOWN ;;
             *:OK:*|*:*:OK) token=warn; label=WARN ;;
             *) token=fail; label=FAIL ;;
         esac
-        [ "$token" = fail ] || break
+        case "$pref" in 12) selected=$rA12 ;; *) selected=$rA13 ;; esac
+        if [ "$pref" = any ] && [ "$sA12" = OK ]; then selected=$rA12; fi
+        if [ "$pref" = both ] && [ "$sA12" != OK ]; then selected=$rA12; fi
+        if [ "$token" = warn ]; then
+            if [ "$sA12" = OK ]; then selected=$rA12; else selected=$rA13; fi
+        fi
+        IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
+$selected
+EOF
+        if [ "$fam" = "$fam_first" ]; then
+            v12="$vA12"; v13="$vA13"; dl="$rc|$code|$bytes|$total"
+        else
+            v12_6="$vA12"; v13_6="$vA13"; dl_6="$rc|$code|$bytes|$total"
+        fi
+        fam_last="$fam"
+        # v6-попытка: не только при полном провале v4, но и при частичном
+        # (warn/unknown) — у пользователя с рабочим v6 она может быть зеленее.
+        [ "$token" = ok ] && break
         [ "$fam" = "$fam_first" ] || break
         [ "$fam_first" != "-6" ] || break
         type z2r_ipv6_available >/dev/null 2>&1 && z2r_ipv6_available || break
@@ -602,22 +623,15 @@ EOF
         fi
         fam="-6"
     done
-    case "$pref" in 12) selected=$r12 ;; *) selected=$r13 ;; esac
-    if [ "$pref" = any ] && [ "$s12" = OK ]; then selected=$r12; fi
-    if [ "$pref" = both ] && [ "$s12" != OK ]; then selected=$r12; fi
-    if [ "$token" = warn ]; then
-        if [ "$s12" = OK ]; then selected=$r12; else selected=$r13; fi
-    fi
-    IFS='|' read -r state reason rc code bytes tcp tls ttfb total speed <<EOF
-$selected
-EOF
     if [ "$output_mode" = print ]; then
         case "$token" in ok) color=${green:-} ;; fail) color=${red:-} ;; *) color=${yellow:-} ;; esac
         printf '%bMedia %s%s: %s; %s байт за %s с%b\n' "$color" "$label" "$(_z2r_media_fam_tag)" "$reason" "$bytes" "$total" "${plain:-}"
     else
-        printf '%s\n%s\n%s\n%s\n%s\n' "$v12" "$v13" "$rc|$code|$bytes|$total" \
+        printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+            "$v12" "$v13" "$dl" \
+            "${v12_6:-skip}" "${v13_6:-skip}" "${dl_6:-skip}" \
             "$token|Media $label: $reason; $bytes байт за $total с" \
-            "family|${Z2R_MEDIA_FAMILY:--4}"
+            "family|$fam_last"
     fi
 }
 

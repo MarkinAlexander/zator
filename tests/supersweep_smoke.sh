@@ -779,7 +779,7 @@ unset MOCK_DELAY MOCK_OK_P1
     Z2R_MEDIA_READY=1
   }
   z2r_media_target() {
-    printf '0|200|HTTP/2|0.1|1.1.1.1\n0|200|HTTP/2|0.1|1.1.1.1\n0|206|2097152|0.5\nok|media 2097152 байт\n'
+    printf '0|200|HTTP/2|0.1|1.1.1.1\n0|200|HTTP/2|0.1|1.1.1.1\n0|206|2097152|0.5\nskip\nskip\nskip\nok|media 2097152 байт\nfamily|-4\n'
   }
   z2r_quic_curl_detect() { echo "$TMP_DIR/curl-h3-mock15"; return 0; }
   z2r_gv_dns_gate() { return 0; }
